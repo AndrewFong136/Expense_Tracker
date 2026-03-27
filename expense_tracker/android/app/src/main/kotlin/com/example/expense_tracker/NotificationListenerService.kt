@@ -1,7 +1,6 @@
 package com.example.expense_tracker
 
 import android.Manifest
-import android.app.AlarmManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -13,12 +12,10 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
-import android.location.Location
 import android.location.LocationManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
-import android.os.SystemClock
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import android.util.Log
@@ -26,15 +23,11 @@ import androidx.annotation.RequiresApi
 import androidx.annotation.RequiresPermission
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
-import androidx.work.OneTimeWorkRequest
-import androidx.work.OneTimeWorkRequestBuilder
-import androidx.work.WorkManager
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeoutOrNull
@@ -49,8 +42,6 @@ import okio.IOException
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import java.util.concurrent.TimeUnit
-import java.util.function.Consumer
 import kotlin.coroutines.resume
 
 class NotificationListenerService : NotificationListenerService() {
@@ -208,7 +199,9 @@ class NotificationListenerService : NotificationListenerService() {
                     Log.d(TAG, "Using recent last known location from $provider")
                     return Pair(lastLocation.latitude, lastLocation.longitude)
                 }
-            } catch (e: SecurityException) { }
+            } catch (_: SecurityException) {
+                null
+            }
         }
 
         val fusedClient = LocationServices.getFusedLocationProviderClient(this)

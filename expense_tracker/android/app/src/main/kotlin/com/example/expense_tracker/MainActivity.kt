@@ -1,27 +1,16 @@
 package com.example.expense_tracker
 
 import android.Manifest
-import android.content.BroadcastReceiver
 import android.content.ComponentName
-import android.content.Context
 import android.content.Intent
-import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.drawable.BitmapDrawable
-import android.net.Uri
 import android.os.Build
 import android.provider.Settings
-import android.util.Log
-import androidx.annotation.RequiresApi
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
-import io.flutter.embedding.android.FlutterActivity
-import io.flutter.embedding.engine.FlutterEngine
-import io.flutter.plugin.common.MethodChannel
-import java.io.ByteArrayOutputStream
-import androidx.core.content.edit
-import android.service.notification.NotificationListenerService
+import androidx.core.net.toUri
 import androidx.work.Constraints
 import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.ExistingWorkPolicy
@@ -29,6 +18,10 @@ import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
+import io.flutter.embedding.android.FlutterActivity
+import io.flutter.embedding.engine.FlutterEngine
+import io.flutter.plugin.common.MethodChannel
+import java.io.ByteArrayOutputStream
 import java.util.concurrent.TimeUnit
 
 class MainActivity : FlutterActivity() {
@@ -70,7 +63,7 @@ class MainActivity : FlutterActivity() {
             val stream = ByteArrayOutputStream()
             bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream)
             stream.toByteArray()
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             null
         }
     }
@@ -104,7 +97,7 @@ class MainActivity : FlutterActivity() {
                     result.success(enabled)
                 }
                 "isNotificationListenerAccessEnabled" -> {
-                    val cn = ComponentName(this, com.example.expense_tracker.NotificationListenerService::class.java)
+                    val cn = ComponentName(this, NotificationListenerService::class.java)
                     val enabledListeners = Settings.Secure.getString(contentResolver, "enabled_notification_listeners")
                     val isEnabled = enabledListeners?.contains(cn.flattenToString()) == true
                     result.success(isEnabled)
@@ -134,7 +127,7 @@ class MainActivity : FlutterActivity() {
                         }
                     } else {
                         Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
-                            data = Uri.parse("package:$packageName")
+                            data = "package:$packageName".toUri()
                         }
                     }
                     startActivity(intent)
@@ -161,9 +154,9 @@ class MainActivity : FlutterActivity() {
                     saveSettings(serviceEnabled, webhookUrl, selectedApps)
 
                     val action = if (serviceEnabled) {
-                        com.example.expense_tracker.NotificationListenerService.ACTION_SHOW_NOTIFICATION
+                        NotificationListenerService.ACTION_SHOW_NOTIFICATION
                     } else {
-                        com.example.expense_tracker.NotificationListenerService.ACTION_HIDE_NOTIFICATION
+                        NotificationListenerService.ACTION_HIDE_NOTIFICATION
                     }
                     sendBroadcast(Intent(action).setPackage(packageName))
 

@@ -1,10 +1,10 @@
 import 'dart:convert';
 
+import 'package:app_settings/app_settings.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:app_settings/app_settings.dart';
 
 void main() {
   runApp(const MyApp());
@@ -56,10 +56,12 @@ class _SettingsPageState extends State<SettingsPage> {
   final Map<String, bool> _selectedApps = {};
   final Map<String, String> _appNames = {};
   final Map<String, String> _appIcons = {};
+  final Map<String, Uint8List?> _iconCache = {};
   final List<Map<String, dynamic>> _allApps = [];
   bool _isLoading = true;
   bool _hasNotificationAccess = false;
-  bool _hasOverlayPermission = false;
+  bool _hasAppNotificationsEnabled = false;
+  bool _hasLocationAlwaysEnabled = false;
 
   final TextEditingController _webhookUrlController = TextEditingController();
   final TextEditingController _searchController = TextEditingController();
@@ -70,48 +72,6 @@ class _SettingsPageState extends State<SettingsPage> {
     _loadSettings();
     _loadInstalledApps();
     _checkPermissions();
-  }
-
-  Future<bool> _isNotificationListenerAccessEnabled() async {
-    final platform = MethodChannel('com.example.expense_tracker/settings');
-    final result = await platform.invokeMethod<bool>('isNotificationListenerAccessEnabled') ?? false;
-    return result;
-  }
-
-  Future<void> _checkPermissions() async {
-    final bool overlayPermission = await Permission.systemAlertWindow.isGranted;
-    final bool notificationPermission = await _isNotificationListenerAccessEnabled();
-
-    setState(() {
-      _hasOverlayPermission = overlayPermission;
-      _hasNotificationAccess = notificationPermission;
-    });
-  }
-
-  Future<void> _loadInstalledApps() async {
-    try{
-      final platform = MethodChannel('com.example.expense_tracker/settings');
-      final List<dynamic> apps = await platform.invokeMethod('getInstalledApps');
-
-      setState(() {
-        _allApps.clear();
-        for (var app in apps) {
-          _allApps.add({
-            'packageName': app['packageName'],
-            'appName': app['appName'],
-            'appIcon': app['appIcon']
-          });
-          _appNames[app['packageName']] = app['appName'];
-          _appIcons[app['packageName']] = app['appIcon'];
-        }
-        _isLoading = false;
-      });
-    } on PlatformException catch (e) {
-      print("Error loading installed apps: ${e.message}");
-      setState(() {
-        _isLoading = false;
-      });
-    }
   }
 
   Future<void> _loadSettings() async {
@@ -129,6 +89,72 @@ class _SettingsPageState extends State<SettingsPage> {
     });
   }
 
+  Future<void> _loadInstalledApps() async {
+    try{
+      final platform = MethodChannel('com.example.expense_tracker/settings');
+      final List<dynamic> apps = await platform.invokeMethod('getInstalledApps');
+
+      setState(() {
+        _allApps.clear();
+        _appNames.clear();
+        _iconCache.clear();
+        for (var app in apps) {
+          _allApps.add({
+            'packageName': app['packageName'],
+            'appName': app['appName'],
+          });
+          _appNames[app['packageName']] = app['appName'];
+        }
+        _isLoading = false;
+      });
+    } on PlatformException catch (e) {
+      print("Error loading installed apps: ${e.message}");
+      setState(() {
+        _isLoading = false;
+      });
+    }
+  }
+
+  Future<void> _checkPermissions() async {
+    final bool notificationPermission = await _isNotificationListenerAccessEnabled();
+    final bool appNotificationsEnabled = await _isAppNotificationEnabled();
+    final bool locationEnabled = await _isLocationAlwaysEnabled();
+
+    setState(() {
+      _hasNotificationAccess = notificationPermission;
+      _hasAppNotificationsEnabled = appNotificationsEnabled;
+      _hasLocationAlwaysEnabled = locationEnabled;
+    });
+
+    if (_hasNotificationAccess && _serviceEnabled) {
+      await _rebindListener();
+    }
+
+    await _sendSettingsToAndroid();
+  }
+
+  Future<void> _rebindListener() async {
+    const platform = MethodChannel('com.example.expense_tracker/settings');
+    await platform.invokeMethod('rebindListener');
+  }
+
+  Future<Uint8List?> _loadAppIcon(String packageName) async {
+    if (_iconCache.containsKey(packageName)){
+      return _iconCache[packageName];
+    }
+
+    const platform = MethodChannel('com.example.expense_tracker/settings');
+    try {
+      final Uint8List? iconBytes = await platform.invokeMethod('getAppIcon', {'packageName': packageName});
+      _iconCache[packageName] = iconBytes;
+      return iconBytes;
+    } on PlatformException catch (e) {
+      print("Failed to load icon for $packageName: ${e.message}");
+      _iconCache[packageName] = null;
+      return null;
+    }
+  }
+
   Future<void> _saveSettings() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool('service_enabled', _serviceEnabled);
@@ -141,10 +167,6 @@ class _SettingsPageState extends State<SettingsPage> {
     await prefs.setStringList('selected_apps', selectedAppList);
 
     await _sendSettingsToAndroid();
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Settings saved successfully')),
-    );
   }
 
   Future<void> _sendSettingsToAndroid() async {
@@ -160,19 +182,78 @@ class _SettingsPageState extends State<SettingsPage> {
     }
   }
 
+  Future<bool> _isAppNotificationEnabled() async {
+    const platform = MethodChannel('com.example.expense_tracker/settings');
+    final result = await platform.invokeMethod<bool>('isAppNotificationEnabled') ?? true;
+    return result;
+  }
+
+  Future<bool> _isNotificationListenerAccessEnabled() async {
+    final platform = MethodChannel('com.example.expense_tracker/settings');
+    final result = await platform.invokeMethod<bool>('isNotificationListenerAccessEnabled') ?? false;
+    return result;
+  }
+
+  Future<bool> _isLocationAlwaysEnabled() async {
+    const platform = MethodChannel('com.example.expense_tracker/settings');
+    final result = await platform.invokeMethod<bool>('isLocationAlwaysEnabled') ?? true;
+    return result;
+  }
+
+  Future<void> _requestAppNotifications() async {
+    final status = await Permission.notification.status;
+    if (!status.isGranted) {
+      final result = await Permission.notification.request();
+      if (!result.isGranted && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Notification permission is required to show the enabled pop-up.')),
+        );
+      }
+    }
+  }
+
+  Future<void> _requestLocationAlwaysPermission() async {
+    PermissionStatus status = await Permission.locationWhenInUse.request();
+    if (!status.isGranted) {
+      if (status.isPermanentlyDenied) {
+        AppSettings.openAppSettings();
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Location permission is required for precise tracking.')),
+        );
+      }
+      return;
+    }
+
+    status = await Permission.locationAlways.request();
+    if (!status.isGranted) {
+      if (status.isPermanentlyDenied) {
+        AppSettings.openAppSettings();
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('For background location, please allow "All the time" in settings.')),
+        );
+      }
+      return;
+    }
+  }
+  
   Future<void> _requestPermissions() async {
-    if (await Permission.systemAlertWindow.request().isDenied) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Overlay permission is required for popups.')),
-      );
+    if (!_hasAppNotificationsEnabled) {
+      await _requestAppNotifications();
+      await _checkPermissions();
     }
 
     if (!_hasNotificationAccess) {
       const platform = MethodChannel('com.example.expense_tracker/settings');
       await platform.invokeMethod('requestNotificationListenerAccess');
+      await _checkPermissions();
     }
 
-    await _checkPermissions();
+    if (!_hasLocationAlwaysEnabled) {
+      await _requestLocationAlwaysPermission();
+      await _checkPermissions();
+    }
   }
 
   @override
@@ -180,26 +261,13 @@ class _SettingsPageState extends State<SettingsPage> {
     return Scaffold(
       appBar: AppBar(
         title: Text(widget.title),
-        actions: [
-          IconButton(
-            icon: Icon(Icons.save),
-            onPressed: _saveSettings,
-          ),
-          IconButton(
-            icon: Icon(Icons.refresh),
-            onPressed: () {
-              _loadInstalledApps();
-              _checkPermissions();
-            },
-          ),
-        ],
       ),
       body: _isLoading
         ? Center(child: CircularProgressIndicator())
         : ListView(
           padding: EdgeInsets.all(16),
           children: [
-            if (!_hasNotificationAccess || !_hasOverlayPermission)
+            if (!_hasAppNotificationsEnabled || !_hasLocationAlwaysEnabled)
               Card(
                 color: Colors.orange[100],
                 child: Padding(
@@ -224,25 +292,24 @@ class _SettingsPageState extends State<SettingsPage> {
 
                       SizedBox(height: 8),
 
-                      if (!_hasNotificationAccess)
-                        Text(
-                          'Notification access is required to listen for incoming notifications.',
-                          style: TextStyle(color: Colors.orange[800]),
-                        ),
-                        SizedBox(height: 8),
-                      if (!_hasOverlayPermission)
-                        Text(
-                          'Overlay permission is required to show interactive popups.',
-                          style: TextStyle(color: Colors.orange[800]),
-                        ),
-                        SizedBox(height: 8),
+                      Text(
+                        'To use the listener you must allow app notifications. \nLocation is recommended for precise tracking.',
+                        style: TextStyle(color: Colors.orange[800]),
+                      ),
+                      SizedBox(height: 12),
+
                       ElevatedButton(
-                        onPressed: _requestPermissions,
+                        onPressed: () async {
+                          if(!_hasAppNotificationsEnabled) await _requestAppNotifications();
+                          if(!_hasLocationAlwaysEnabled) await _requestLocationAlwaysPermission();
+
+                          await _checkPermissions();
+                        },
                         style: ElevatedButton.styleFrom(
                           backgroundColor: Colors.orange,
                         ),
-                        child: Text('Grant Permissions'),
-                      )
+                        child: Text('Allow Permissions'),
+                      ),
                     ]
                   )
                 )
@@ -258,11 +325,17 @@ class _SettingsPageState extends State<SettingsPage> {
                     : null,
                   trailing: Switch(
                     value: _serviceEnabled,
-                    onChanged: (value) {
+                    onChanged: (value) async {
                       setState(() {
                         _serviceEnabled = value;
                       });
-                      if (value && (!_hasOverlayPermission || !_hasNotificationAccess)) _requestPermissions();
+
+                      if (value && (!_hasNotificationAccess || !_hasLocationAlwaysEnabled || !_hasAppNotificationsEnabled)) {
+                        await _requestPermissions();
+                      }
+
+                      await _saveSettings();
+                      await _checkPermissions();
                     },
                   )
                 )
@@ -287,8 +360,9 @@ class _SettingsPageState extends State<SettingsPage> {
                           hintText: 'Enter Webhook URL',
                           border: OutlineInputBorder(),
                         ),
-                        onChanged: (value) {
+                        onChanged: (value) async{
                           _webhookUrl = value;
+                          await _saveSettings();
                         },
                       )
                     ],
@@ -352,7 +426,7 @@ class _SettingsPageState extends State<SettingsPage> {
 
                       SizedBox(height: 8),
 
-                      Container(
+                      SizedBox(
                         height: 300,
                         child: ListView.builder(
                           itemCount: _allApps.length,
@@ -360,7 +434,6 @@ class _SettingsPageState extends State<SettingsPage> {
                             final app = _allApps[index];
                             final packageName = app['packageName'];
                             final appName = app['appName'];
-                            final appIcon = app['appIcon'];
 
                             if (_searchController.text.isNotEmpty &&
                                 !appName.toLowerCase().contains(_searchController.text.toLowerCase()) && 
@@ -370,28 +443,37 @@ class _SettingsPageState extends State<SettingsPage> {
                             }
 
                             return ListTile(
-                              leading: appIcon != null && appIcon.isNotEmpty
-                                ? CircleAvatar(
-                                  backgroundImage: MemoryImage(base64.decode(appIcon)),
-                                  radius: 20
-                                )
-                                : CircleAvatar(
-                                  child: Icon(Icons.android),
-                                  radius: 20
-                                ),
+                              leading: FutureBuilder<Uint8List?> (
+                                future: _loadAppIcon(packageName),
+                                builder: (context, snapshot) {
+                                  if (snapshot.connectionState == ConnectionState.done && snapshot.hasData) {
+                                    return CircleAvatar(
+                                      backgroundImage: MemoryImage(snapshot.data!),
+                                      radius: 20
+                                    );
+                                  } else {
+                                    return CircleAvatar(
+                                      radius: 20,
+                                      child: Icon(Icons.android)
+                                    );
+                                  }
+                                },
+                              ),
                               title: Text(appName),
                               trailing: Checkbox(
                                 value: _selectedApps[packageName] ?? false,
-                                onChanged: (value) {
+                                onChanged: (value) async {
                                   setState(() {
                                     _selectedApps[packageName] = value ?? false;
                                   });
+                                  await _saveSettings();
                                 },
                               ),
-                              onTap: () {
+                              onTap: () async {
                                 setState(() {
                                   _selectedApps[packageName] = !(_selectedApps[packageName] ?? false);
                                 });
+                                await _saveSettings();
                               }
                             );
                           },

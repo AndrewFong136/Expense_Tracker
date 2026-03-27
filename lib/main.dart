@@ -1,4 +1,4 @@
-
+import 'dart:io';
 import 'package:app_settings/app_settings.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -54,7 +54,7 @@ class _SettingsPageState extends State<SettingsPage> {
   String _webhookUrl = '';
   final Map<String, bool> _selectedApps = {};
   final Map<String, String> _appNames = {};
-  final Map<String, Uint8List?> _iconCache = {};
+  final Map<String, File?> _iconCache = {};
   final List<Map<String, dynamic>> _allApps = [];
   bool _isLoading = true;
   bool _hasNotificationAccess = false;
@@ -68,8 +68,8 @@ class _SettingsPageState extends State<SettingsPage> {
   void initState() {
     super.initState();
     _loadSettings();
-    _loadInstalledApps();
     _checkPermissions();
+    _loadInstalledApps();
   }
 
   Future<void> _loadSettings() async {
@@ -87,7 +87,45 @@ class _SettingsPageState extends State<SettingsPage> {
     });
   }
 
+  Future<void> _preloadIcons() async {
+    final packages = _allApps.take(20).map((app) => app['packageName'] as String).toList();
+    final missing = packages.where((pkg) => !_iconCache.containsKey(pkg)).toList();
+    if (missing.isEmpty) return;
+
+    const platform = MethodChannel('com.example.expense_tracker/settings');
+    final Map<dynamic, dynamic>? result = await platform.invokeMethod('getAppIcons', {
+      'packageNames': missing,
+    });
+
+    if (result != null) {
+      result.forEach((pkg, paths) {
+        if (paths != null) {
+          _iconCache[pkg as String] = paths as File?;
+        }
+      });
+      setState(() {});
+    }
+  }
+
   Future<void> _loadInstalledApps() async {
+    final platform = MethodChannel('com.example.expense_tracker/settings');
+    final List<dynamic> cachedApps = await platform.invokeMethod('getCachedApps');
+    if (cachedApps.isNotEmpty) {
+      setState(() {
+        _allApps.clear();
+        for (var app in cachedApps) {
+          final packageName = app['packageName'];
+          final appName = app['appName'];
+          _allApps.add({
+            'packageName': packageName,
+            'appName': appName,
+          });
+          _appNames[packageName] = appName;
+        }
+        _isLoading = false;
+      });
+    }
+
     try{
       final platform = MethodChannel('com.example.expense_tracker/settings');
       final List<dynamic> apps = await platform.invokeMethod('getInstalledApps');
@@ -95,14 +133,16 @@ class _SettingsPageState extends State<SettingsPage> {
       setState(() {
         _allApps.clear();
         _appNames.clear();
-        _iconCache.clear();
         for (var app in apps) {
+          final packageName = app['packageName'];
+          final appName = app['appName'];
           _allApps.add({
-            'packageName': app['packageName'],
-            'appName': app['appName'],
+            'packageName': packageName,
+            'appName': appName,
           });
-          _appNames[app['packageName']] = app['appName'];
+          _appNames[packageName] = appName;
         }
+        _preloadIcons();
         _isLoading = false;
       });
     } on PlatformException {
@@ -135,18 +175,21 @@ class _SettingsPageState extends State<SettingsPage> {
     await platform.invokeMethod('rebindListener');
   }
 
-  Future<Uint8List?> _loadAppIcon(String packageName) async {
+  Future<File?> _loadAppIcon(String packageName) async {
     if (_iconCache.containsKey(packageName)){
-      return _iconCache[packageName];
+      final cached =  _iconCache[packageName];
+      if (cached is File) return cached;
     }
 
     const platform = MethodChannel('com.example.expense_tracker/settings');
     try {
-      final Uint8List? iconBytes = await platform.invokeMethod('getAppIcon', {'packageName': packageName});
-      _iconCache[packageName] = iconBytes;
-      return iconBytes;
+      final String? icon = await platform.invokeMethod('getAppIcon', {'packageName': packageName});
+      if (icon != null) {
+        final file = File(icon);
+        _iconCache[packageName] = file;
+        return file;
+      }
     } on PlatformException {
-      _iconCache[packageName] = null;
       return null;
     }
   }
@@ -445,12 +488,12 @@ class _SettingsPageState extends State<SettingsPage> {
                             }
 
                             return ListTile(
-                              leading: FutureBuilder<Uint8List?> (
+                              leading: FutureBuilder<File?> (
                                 future: _loadAppIcon(packageName),
                                 builder: (context, snapshot) {
                                   if (snapshot.connectionState == ConnectionState.done && snapshot.hasData) {
                                     return CircleAvatar(
-                                      backgroundImage: MemoryImage(snapshot.data!),
+                                      backgroundImage: FileImage(snapshot.data!),
                                       radius: 20
                                     );
                                   } else {

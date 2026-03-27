@@ -5,9 +5,12 @@ import android.content.ComponentName
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.graphics.drawable.BitmapDrawable
+import android.graphics.drawable.Drawable
 import android.os.Build
 import android.provider.Settings
+import android.util.Log
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import androidx.core.net.toUri
@@ -23,6 +26,11 @@ import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import java.io.ByteArrayOutputStream
 import java.util.concurrent.TimeUnit
+import androidx.core.content.edit
+import androidx.core.graphics.createBitmap
+import com.google.gson.Gson
+import com.google.gson.reflect.TypeToken
+import java.io.File
 
 class MainActivity : FlutterActivity() {
 
@@ -56,21 +64,44 @@ class MainActivity : FlutterActivity() {
         return apps
     }
 
-    private fun getAppIcon(packageName: String): ByteArray? {
+    private fun getAppIcon(packageName: String): String? {
         return try {
             val drawable = packageManager.getApplicationIcon(packageName)
-            val bitmap = (drawable as BitmapDrawable).bitmap
-            val stream = ByteArrayOutputStream()
-            bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream)
-            stream.toByteArray()
+            val bitmap = drawableToBitmap(drawable)
+            val file = File(cacheDir, "$packageName.png")
+            file.outputStream().use { out ->
+                bitmap.compress(Bitmap.CompressFormat.PNG, 80, out)
+            }
+            file.absolutePath
         } catch (_: Exception) {
             null
         }
     }
 
+    private fun drawableToBitmap(drawable: Drawable): Bitmap {
+        if (drawable is BitmapDrawable) {
+            return drawable.bitmap
+        }
+        val width = if (drawable.intrinsicWidth > 0) drawable.intrinsicWidth else 96
+        val height = if (drawable.intrinsicHeight > 0) drawable.intrinsicHeight else 96
+        val bitmap = createBitmap(width, height)
+        val canvas = Canvas(bitmap)
+        drawable.setBounds(0, 0, canvas.width, canvas.height)
+        drawable.draw(canvas)
+        return bitmap
+    }
+
+    private fun cacheAppList(apps: List<Map<String, String>>) {
+        val gson = Gson()
+        val json = gson.toJson(apps)
+        getSharedPreferences("expense_tracker_settings", MODE_PRIVATE).edit {
+            putString("cached_apps", json)
+        }
+    }
+
     private fun saveSettings(serviceEnabled: Boolean, webhookUrl: String, selectedApps: Map<String, Boolean>) {
         val prefs = getSharedPreferences("expense_tracker_settings", MODE_PRIVATE)
-        with (prefs.edit()) {
+        prefs.edit {
             putBoolean("service_enabled", serviceEnabled)
             putString("webhook_url", webhookUrl)
 
@@ -81,8 +112,6 @@ class MainActivity : FlutterActivity() {
                 }
             }
             putStringSet("selected_apps", selectedAppsList)
-
-            apply()
         }
     }
 
@@ -136,15 +165,35 @@ class MainActivity : FlutterActivity() {
                 "getInstalledApps" -> {
                     try {
                         val apps = getInstalledApps()
+                        cacheAppList(apps)
                         result.success(apps)
                     } catch (e: Exception) {
                         result.error("GET_APPS_FAILED", "Failed to get installed apps.", e.message)
                     }
                 }
+                "getCachedApps" -> {
+                    val prefs = getSharedPreferences("expense_tracker_settings", MODE_PRIVATE)
+                    val cachedJson = prefs.getString("cached_apps", null)
+                    if (cachedJson != null) {
+                        val type = object : TypeToken<List<Map<String, String>>>() {}.type
+                        val apps: List<Map<String, String>> = Gson().fromJson(cachedJson, type)
+                        result.success(apps)
+                    } else {
+                        result.success(emptyList<Map<String, String>>())
+                    }
+                }
                 "getAppIcon" -> {
-                    val packageName = call.argument<String>(packageName) ?: ""
+                    val packageName = call.argument<String>("packageName") ?: ""
                     val iconBytes = getAppIcon(packageName)
                     result.success(iconBytes)
+                }
+                "getAppIcons" -> {
+                    val packageNames = call.argument<List<String>>("packageNames") ?: emptyList()
+                    val resultMap = mutableMapOf<String, String?>()
+                    for (pkg in packageNames) {
+                        resultMap[pkg] = getAppIcon(pkg)
+                    }
+                    result.success(resultMap)
                 }
                 "updateSettings" -> {
                     val serviceEnabled = call.argument<Boolean>("service_enabled") ?: false

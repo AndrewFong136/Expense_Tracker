@@ -69,7 +69,10 @@ class _SettingsPageState extends State<SettingsPage> {
     super.initState();
     _loadSettings();
     _checkPermissions();
-    _loadInstalledApps();
+    _loadCachedApps();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+        _loadInstalledApps();
+    });
   }
 
   Future<void> _loadSettings() async {
@@ -107,7 +110,7 @@ class _SettingsPageState extends State<SettingsPage> {
     }
   }
 
-  Future<void> _loadInstalledApps() async {
+  Future<void> _loadCachedApps() async {
     final platform = MethodChannel('com.example.expense_tracker/settings');
     final List<dynamic> cachedApps = await platform.invokeMethod('getCachedApps');
     if (cachedApps.isNotEmpty) {
@@ -125,8 +128,10 @@ class _SettingsPageState extends State<SettingsPage> {
         _isLoading = false;
       });
     }
+  }
 
-    try{
+  Future<void> _loadInstalledApps() async {
+      try{
       final platform = MethodChannel('com.example.expense_tracker/settings');
       final List<dynamic> apps = await platform.invokeMethod('getInstalledApps');
 
@@ -164,7 +169,7 @@ class _SettingsPageState extends State<SettingsPage> {
     });
 
     if (_hasNotificationAccess && _serviceEnabled) {
-      await _rebindListener();
+      _rebindListener();
     }
 
     await _sendSettingsToAndroid();

@@ -27,10 +27,17 @@ import com.google.gson.reflect.TypeToken
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
+import java.io.ByteArrayOutputStream
 import java.io.File
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
 class MainActivity : FlutterActivity() {
+
+    // Background executor for icon decoding / disk I/O so the platform thread
+    // (and therefore Flutter's UI thread) is never blocked.
+    private val iconExecutor: ExecutorService = Executors.newSingleThreadExecutor()
 
     private fun getInstalledApps(): List<Map<String, String>> {
         val apps = mutableListOf<Map<String, String>>()
@@ -62,15 +69,31 @@ class MainActivity : FlutterActivity() {
         return apps
     }
 
-    private fun getAppIcon(packageName: String): String? {
+    /**
+     * Returns the PNG bytes for [packageName]'s launcher icon.
+     *
+     * Uses a disk cache (`cacheDir/<packageName>.png`) so an icon is only
+     * decoded + compressed once; subsequent calls (including across launches)
+     * just read the cached file. Returns null if the icon can't be resolved.
+     */
+    private fun getAppIconBytes(packageName: String): ByteArray? {
+        val file = File(cacheDir, "$packageName.png")
+        if (file.exists() && file.length() > 0) {
+            return try {
+                file.readBytes()
+            } catch (_: Exception) {
+                null
+            }
+        }
         return try {
             val drawable = packageManager.getApplicationIcon(packageName)
             val bitmap = drawableToBitmap(drawable)
-            val file = File(cacheDir, "$packageName.png")
-            file.outputStream().use { out ->
-                bitmap.compress(Bitmap.CompressFormat.PNG, 80, out)
-            }
-            file.absolutePath
+            val out = ByteArrayOutputStream()
+            bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+            val bytes = out.toByteArray()
+            // Persist to disk so the next call (and next launch) is a cheap read.
+            file.writeBytes(bytes)
+            bytes
         } catch (_: Exception) {
             null
         }
@@ -161,12 +184,14 @@ class MainActivity : FlutterActivity() {
                     result.success(null)
                 }
                 "getInstalledApps" -> {
-                    try {
-                        val apps = getInstalledApps()
-                        cacheAppList(apps)
-                        result.success(apps)
-                    } catch (e: Exception) {
-                        result.error("GET_APPS_FAILED", "Failed to get installed apps.", e.message)
+                    iconExecutor.execute {
+                        try {
+                            val apps = getInstalledApps()
+                            cacheAppList(apps)
+                            result.success(apps)
+                        } catch (e: Exception) {
+                            result.error("GET_APPS_FAILED", "Failed to get installed apps.", e.message)
+                        }
                     }
                 }
                 "getCachedApps" -> {
@@ -182,16 +207,20 @@ class MainActivity : FlutterActivity() {
                 }
                 "getAppIcon" -> {
                     val packageName = call.argument<String>("packageName") ?: ""
-                    val iconBytes = getAppIcon(packageName)
-                    result.success(iconBytes)
+                    iconExecutor.execute {
+                        result.success(getAppIconBytes(packageName))
+                    }
                 }
                 "getAppIcons" -> {
                     val packageNames = call.argument<List<String>>("packageNames") ?: emptyList()
-                    val resultMap = mutableMapOf<String, String?>()
-                    for (pkg in packageNames) {
-                        resultMap[pkg] = getAppIcon(pkg)
+                    iconExecutor.execute {
+                        val resultMap = mutableMapOf<String, ByteArray>()
+                        for (pkg in packageNames) {
+                            val bytes = getAppIconBytes(pkg)
+                            if (bytes != null) resultMap[pkg] = bytes
+                        }
+                        result.success(resultMap)
                     }
-                    result.success(resultMap)
                 }
                 "updateSettings" -> {
                     val serviceEnabled = call.argument<Boolean>("service_enabled") ?: false

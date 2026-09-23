@@ -5,11 +5,15 @@ import android.content.ComponentName
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.graphics.drawable.BitmapDrawable
+import android.graphics.drawable.Drawable
 import android.os.Build
 import android.provider.Settings
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
+import androidx.core.content.edit
+import androidx.core.graphics.createBitmap
 import androidx.core.net.toUri
 import androidx.work.Constraints
 import androidx.work.ExistingPeriodicWorkPolicy
@@ -18,13 +22,22 @@ import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
+import com.google.gson.Gson
+import com.google.gson.reflect.TypeToken
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import java.io.ByteArrayOutputStream
+import java.io.File
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
 class MainActivity : FlutterActivity() {
+
+    // Background executor for icon decoding / disk I/O so the platform thread
+    // (and therefore Flutter's UI thread) is never blocked.
+    private val iconExecutor: ExecutorService = Executors.newSingleThreadExecutor()
 
     private fun getInstalledApps(): List<Map<String, String>> {
         val apps = mutableListOf<Map<String, String>>()
@@ -56,21 +69,60 @@ class MainActivity : FlutterActivity() {
         return apps
     }
 
-    private fun getAppIcon(packageName: String): ByteArray? {
+    /**
+     * Returns the PNG bytes for [packageName]'s launcher icon.
+     *
+     * Uses a disk cache (`cacheDir/<packageName>.png`) so an icon is only
+     * decoded + compressed once; subsequent calls (including across launches)
+     * just read the cached file. Returns null if the icon can't be resolved.
+     */
+    private fun getAppIconBytes(packageName: String): ByteArray? {
+        val file = File(cacheDir, "$packageName.png")
+        if (file.exists() && file.length() > 0) {
+            return try {
+                file.readBytes()
+            } catch (_: Exception) {
+                null
+            }
+        }
         return try {
             val drawable = packageManager.getApplicationIcon(packageName)
-            val bitmap = (drawable as BitmapDrawable).bitmap
-            val stream = ByteArrayOutputStream()
-            bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream)
-            stream.toByteArray()
+            val bitmap = drawableToBitmap(drawable)
+            val out = ByteArrayOutputStream()
+            bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+            val bytes = out.toByteArray()
+            // Persist to disk so the next call (and next launch) is a cheap read.
+            file.writeBytes(bytes)
+            bytes
         } catch (_: Exception) {
             null
         }
     }
 
+    private fun drawableToBitmap(drawable: Drawable): Bitmap {
+        if (drawable is BitmapDrawable) {
+            return drawable.bitmap
+        }
+        val width = if (drawable.intrinsicWidth > 0) drawable.intrinsicWidth else 96
+        val height = if (drawable.intrinsicHeight > 0) drawable.intrinsicHeight else 96
+        val bitmap = createBitmap(width, height)
+        val canvas = Canvas(bitmap)
+        drawable.setBounds(0, 0, canvas.width, canvas.height)
+        drawable.draw(canvas)
+        return bitmap
+    }
+
+    private fun cacheAppList(apps: List<Map<String, String>>) {
+        val gson = Gson()
+        val json = gson.toJson(apps)
+        getSharedPreferences("expense_tracker_settings", MODE_PRIVATE).edit {
+            putString("cached_apps", json)
+        }
+    }
+
     private fun saveSettings(serviceEnabled: Boolean, webhookUrl: String, selectedApps: Map<String, Boolean>) {
         val prefs = getSharedPreferences("expense_tracker_settings", MODE_PRIVATE)
-        with (prefs.edit()) {
+        prefs.edit {
             putBoolean("service_enabled", serviceEnabled)
             putString("webhook_url", webhookUrl)
 
@@ -81,8 +133,6 @@ class MainActivity : FlutterActivity() {
                 }
             }
             putStringSet("selected_apps", selectedAppsList)
-
-            apply()
         }
     }
 
@@ -134,17 +184,43 @@ class MainActivity : FlutterActivity() {
                     result.success(null)
                 }
                 "getInstalledApps" -> {
-                    try {
-                        val apps = getInstalledApps()
+                    iconExecutor.execute {
+                        try {
+                            val apps = getInstalledApps()
+                            cacheAppList(apps)
+                            result.success(apps)
+                        } catch (e: Exception) {
+                            result.error("GET_APPS_FAILED", "Failed to get installed apps.", e.message)
+                        }
+                    }
+                }
+                "getCachedApps" -> {
+                    val prefs = getSharedPreferences("expense_tracker_settings", MODE_PRIVATE)
+                    val cachedJson = prefs.getString("cached_apps", null)
+                    if (cachedJson != null) {
+                        val type = object : TypeToken<List<Map<String, String>>>() {}.type
+                        val apps: List<Map<String, String>> = Gson().fromJson(cachedJson, type)
                         result.success(apps)
-                    } catch (e: Exception) {
-                        result.error("GET_APPS_FAILED", "Failed to get installed apps.", e.message)
+                    } else {
+                        result.success(emptyList<Map<String, String>>())
                     }
                 }
                 "getAppIcon" -> {
-                    val packageName = call.argument<String>(packageName) ?: ""
-                    val iconBytes = getAppIcon(packageName)
-                    result.success(iconBytes)
+                    val packageName = call.argument<String>("packageName") ?: ""
+                    iconExecutor.execute {
+                        result.success(getAppIconBytes(packageName))
+                    }
+                }
+                "getAppIcons" -> {
+                    val packageNames = call.argument<List<String>>("packageNames") ?: emptyList()
+                    iconExecutor.execute {
+                        val resultMap = mutableMapOf<String, ByteArray>()
+                        for (pkg in packageNames) {
+                            val bytes = getAppIconBytes(pkg)
+                            if (bytes != null) resultMap[pkg] = bytes
+                        }
+                        result.success(resultMap)
+                    }
                 }
                 "updateSettings" -> {
                     val serviceEnabled = call.argument<Boolean>("service_enabled") ?: false

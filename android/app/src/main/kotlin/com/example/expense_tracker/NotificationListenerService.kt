@@ -57,6 +57,7 @@ class NotificationListenerService : NotificationListenerService() {
     companion object {
         const val ACTION_SHOW_NOTIFICATION = "com.example.expense_tracker.SHOW_NOTIFICATION"
         const val ACTION_HIDE_NOTIFICATION = "com.example.expense_tracker.HIDE_NOTIFICATION"
+        const val ACTION_DISMISS_NOTIFICATION = "com.example.expense_tracker.DISMISS_NOTIFICATION"
     }
 
     private val notificationReceiver = object : BroadcastReceiver() {
@@ -89,6 +90,19 @@ class NotificationListenerService : NotificationListenerService() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // Android 14+ lets the user dismiss even an ongoing FGS notification.
+        // When that happens the deleteIntent attached in buildEnabledNotification
+        // fires here; re-create the notification so it persists. Guarded by the
+        // service_enabled pref so we never fight the user's "disable" toggle.
+        if (intent?.action == ACTION_DISMISS_NOTIFICATION) {
+            val enabled = getSharedPreferences("expense_tracker_settings", MODE_PRIVATE)
+                .getBoolean("service_enabled", false)
+            if (enabled) {
+                startForeground(NOTIFICATION_ID, buildEnabledNotification())
+            }
+            return START_STICKY
+        }
+
         if (intent?.getBooleanExtra("STOP", false) == true) {
             Log.d(TAG, "Stop command received")
             stopSelf()
@@ -131,11 +145,28 @@ class NotificationListenerService : NotificationListenerService() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
+        // On Android 14+ an ongoing FGS notification can be dismissed by the
+        // user. Attach a deleteIntent routed back to this service so onStartCommand
+        // re-posts the notification, keeping the listener persistent.
+        val dismissIntent = Intent(this, NotificationListenerService::class.java).apply {
+            action = ACTION_DISMISS_NOTIFICATION
+        }
+        val dismissPendingIntent = PendingIntent.getService(
+            this,
+            0,
+            dismissIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Expense Tracker")
             .setContentText("Notification listener enabled")
             .setSmallIcon(android.R.drawable.ic_dialog_info)
             .setContentIntent(pendingIntent)
+            .setDeleteIntent(dismissPendingIntent)
+            .setCategory(NotificationCompat.CATEGORY_SERVICE)
+            .setColor(0xFFFB8C00.toInt())   // brand orange (#FB8C00)
+            .setColorized(true)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setOngoing(true)
             .setAutoCancel(false)

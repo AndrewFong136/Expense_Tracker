@@ -12,6 +12,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.content.pm.ServiceInfo
 import android.location.LocationManager
 import android.os.Build
 import android.os.Handler
@@ -60,11 +61,39 @@ class NotificationListenerService : NotificationListenerService() {
         const val ACTION_DISMISS_NOTIFICATION = "com.example.expense_tracker.DISMISS_NOTIFICATION"
     }
 
+    /**
+     * Re-request the system's notification-listener binding. No-op below API 25
+     * where [requestRebind] isn't available. Called from [onCreate],
+     * [onListenerDisconnected] and [onTimeout] to recover a dropped binding.
+     */
+    private fun requestListenerRebind() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N_MR1) {
+            requestRebind(ComponentName(this, NotificationListenerService::class.java))
+        }
+    }
+
+    /**
+     * Start (or update) the foreground notification, declaring the specialUse
+     * FGS type on Android 14+ so the system associates the correct
+     * (non-time-limited) type with the running service.
+     */
+    private fun startForegroundWithType(notification: Notification) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            startForeground(
+                NOTIFICATION_ID,
+                notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+            )
+        } else {
+            startForeground(NOTIFICATION_ID, notification)
+        }
+    }
+
     private val notificationReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             when (intent?.action) {
                 ACTION_SHOW_NOTIFICATION -> {
-                    startForeground(NOTIFICATION_ID, buildEnabledNotification())
+                    startForegroundWithType(buildEnabledNotification())
                 }
                 ACTION_HIDE_NOTIFICATION -> {
                     stopForeground(STOP_FOREGROUND_REMOVE)
@@ -77,11 +106,10 @@ class NotificationListenerService : NotificationListenerService() {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
-        startForeground(NOTIFICATION_ID, buildEnabledNotification())
+        startForegroundWithType(buildEnabledNotification())
 
         Handler(Looper.getMainLooper()).postDelayed({
-            val cn = ComponentName(this, com.example.expense_tracker.NotificationListenerService::class.java)
-            requestRebind(cn)
+            requestListenerRebind()
         }, 1000)
 
         val filter = IntentFilter(ACTION_SHOW_NOTIFICATION).apply { addAction(ACTION_HIDE_NOTIFICATION) }
@@ -98,7 +126,7 @@ class NotificationListenerService : NotificationListenerService() {
             val enabled = getSharedPreferences("expense_tracker_settings", MODE_PRIVATE)
                 .getBoolean("service_enabled", false)
             if (enabled) {
-                startForeground(NOTIFICATION_ID, buildEnabledNotification())
+                startForegroundWithType(buildEnabledNotification())
             }
             return START_STICKY
         }
@@ -115,6 +143,25 @@ class NotificationListenerService : NotificationListenerService() {
     override fun onListenerConnected() {
         super.onListenerConnected()
         Log.d(TAG, "Listener connected and ready to receive notifications")
+    }
+
+    override fun onListenerDisconnected() {
+        // The system dropped the listener binding (e.g. under memory pressure or
+        // after a battery-saver event). Ask to be re-bound immediately instead of
+        // waiting for the next notification or the 15-min keep-alive worker.
+        super.onListenerDisconnected()
+        Log.d(TAG, "Listener disconnected — requesting rebind")
+        requestListenerRebind()
+    }
+
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        // Android 14+ FGS timeout hook. Shouldn't fire for the specialUse type,
+        // but handled defensively: refresh the listener binding so the system
+        // reconnects us; the keep-alive worker will re-post the foreground
+        // notification on its next cycle.
+        super.onTimeout(startId, fgsType)
+        Log.d(TAG, "onTimeout(startId=$startId, fgsType=$fgsType) — refreshing listener binding")
+        requestListenerRebind()
     }
 
     override fun onDestroy() {
@@ -262,6 +309,7 @@ class NotificationListenerService : NotificationListenerService() {
             }
         }?.let { Pair(it.latitude, it.longitude) }
     }
+
     private fun sendToWebhook(title: String, message: String, appName: String, url: String, lat: Double?, lon: Double?) {
         val mediaType = "application/json; charset=utf-8".toMediaTypeOrNull()
 
@@ -272,7 +320,7 @@ class NotificationListenerService : NotificationListenerService() {
 
         val jsonPayload = """
         {
-            "app": "$appName", 
+            "app": "$appName",
             "title": "$escapedTitle",
             "message": "$escapedMessage",
             "timestamp": "$currentDate",

@@ -40,6 +40,7 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _hasNotificationAccess = false;
   bool _hasAppNotificationsEnabled = false;
   bool _hasLocationAlwaysEnabled = false;
+  bool _hasBatteryExemption = false;
 
   // Loading state
   bool _isLoading = true;
@@ -132,12 +133,14 @@ class _HomeScreenState extends State<HomeScreen> {
     final notif = await _repo.isNotificationListenerAccessEnabled();
     final appNotif = await _repo.isAppNotificationEnabled();
     final loc = await _repo.isLocationAlwaysEnabled();
+    final battery = await Permission.ignoreBatteryOptimizations.status;
 
     if (!mounted) return;
     setState(() {
       _hasNotificationAccess = notif;
       _hasAppNotificationsEnabled = appNotif;
       _hasLocationAlwaysEnabled = loc;
+      _hasBatteryExemption = battery.isGranted;
     });
 
     if (_hasNotificationAccess && _serviceEnabled) {
@@ -186,6 +189,21 @@ class _HomeScreenState extends State<HomeScreen> {
                   'For background location, allow "All the time" in settings.')),
         );
       }
+    }
+  }
+
+  Future<void> _requestBatteryExemption() async {
+    final status = await Permission.ignoreBatteryOptimizations.request();
+    if (mounted) {
+      setState(() => _hasBatteryExemption = status.isGranted);
+    }
+    if (!status.isGranted && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+              'Set this app to "Not optimized" so the listener isn\'t killed after a few hours.'),
+        ),
+      );
     }
   }
 
@@ -335,6 +353,10 @@ class _HomeScreenState extends State<HomeScreen> {
                   const SizedBox(height: 16),
                 ],
                 _listenerCard(theme),
+                if (_serviceEnabled && !_hasBatteryExemption) ...[
+                  const SizedBox(height: 16),
+                  _batteryExemptionCard(theme),
+                ],
                 const SizedBox(height: 16),
                 _webhookCard(theme),
                 const SizedBox(height: 16),
@@ -388,6 +410,33 @@ class _HomeScreenState extends State<HomeScreen> {
           prefixIcon: Icon(Icons.link_outlined),
         ),
         onChanged: _onWebhookChanged,
+      ),
+    );
+  }
+
+  Widget _batteryExemptionCard(ThemeData theme) {
+    return SectionCard(
+      icon: Icons.battery_saver_outlined,
+      title: 'Battery optimization',
+      subtitle: 'Keep the listener alive in the background',
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              'Disable battery optimization for this app so the system doesn\'t '
+              'kill the listener after a few hours.',
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
+                height: 1.4,
+              ),
+            ),
+          ),
+          const SizedBox(width: 12),
+          FilledButton(
+            onPressed: _requestBatteryExemption,
+            child: const Text('Allow'),
+          ),
+        ],
       ),
     );
   }

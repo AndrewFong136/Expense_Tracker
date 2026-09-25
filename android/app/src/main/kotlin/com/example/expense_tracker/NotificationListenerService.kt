@@ -63,7 +63,7 @@ class NotificationListenerService : NotificationListenerService() {
 
     /**
      * Re-request the system's notification-listener binding. No-op below API 25
-     * where [requestRebind] isn't available. Called from [onCreate],
+     * where requestRebind isn't available. Called from [onCreate],
      * [onListenerDisconnected] and [onTimeout] to recover a dropped binding.
      */
     private fun requestListenerRebind() {
@@ -213,7 +213,6 @@ class NotificationListenerService : NotificationListenerService() {
             .setDeleteIntent(dismissPendingIntent)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setColor(0xFFFB8C00.toInt())   // brand orange (#FB8C00)
-            .setColorized(true)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setOngoing(true)
             .setAutoCancel(false)
@@ -316,14 +315,14 @@ class NotificationListenerService : NotificationListenerService() {
         val escapedTitle = title.replace("\"", "\\\"")
         val escapedMessage = message.replace("\"", "\\\"")
 
-        val currentDate = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date())
+        val currentDateTime = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date())
 
         val jsonPayload = """
         {
             "app": "$appName",
             "title": "$escapedTitle",
             "message": "$escapedMessage",
-            "timestamp": "$currentDate",
+            "timestamp": "$currentDateTime",
             "location": "$lat,$lon"
         }
         """.trimIndent()

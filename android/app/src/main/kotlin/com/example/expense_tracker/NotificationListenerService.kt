@@ -24,6 +24,9 @@ import androidx.annotation.RequiresApi
 import androidx.annotation.RequiresPermission
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
+import androidx.work.ExistingWorkPolicy
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkManager
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
 import kotlinx.coroutines.CoroutineScope
@@ -43,7 +46,9 @@ import okio.IOException
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
+import kotlin.time.Duration.Companion.milliseconds
 
 class NotificationListenerService : NotificationListenerService() {
     private val client = OkHttpClient()
@@ -98,6 +103,14 @@ class NotificationListenerService : NotificationListenerService() {
                 ACTION_HIDE_NOTIFICATION -> {
                     stopForeground(STOP_FOREGROUND_REMOVE)
                 }
+                // On Android 13+ a user can swipe away an FGS notification. The
+                // deleteIntent (a broadcast) routes that swipe here; re-post via
+                // startForeground, the only call that can restore a dismissed FGS
+                // notification. The receiver lives in this service's process, so
+                // it fires instantly with no background-start restriction.
+                ACTION_DISMISS_NOTIFICATION -> {
+                    startForegroundWithType(buildEnabledNotification())
+                }
             }
         }
     }
@@ -112,31 +125,39 @@ class NotificationListenerService : NotificationListenerService() {
             requestListenerRebind()
         }, 1000)
 
-        val filter = IntentFilter(ACTION_SHOW_NOTIFICATION).apply { addAction(ACTION_HIDE_NOTIFICATION) }
+        val filter = IntentFilter(ACTION_SHOW_NOTIFICATION).apply {
+            addAction(ACTION_HIDE_NOTIFICATION)
+            addAction(ACTION_DISMISS_NOTIFICATION)
+        }
         registerReceiver(notificationReceiver, filter, RECEIVER_NOT_EXPORTED)
         Log.d(TAG, "Service created and running in foreground")
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        // Android 14+ lets the user dismiss even an ongoing FGS notification.
-        // When that happens the deleteIntent attached in buildEnabledNotification
-        // fires here; re-create the notification so it persists. Guarded by the
-        // service_enabled pref so we never fight the user's "disable" toggle.
-        if (intent?.action == ACTION_DISMISS_NOTIFICATION) {
-            val enabled = getSharedPreferences("expense_tracker_settings", MODE_PRIVATE)
-                .getBoolean("service_enabled", false)
-            if (enabled) {
-                startForegroundWithType(buildEnabledNotification())
-            }
-            return START_STICKY
-        }
+        Log.d(TAG, "onStartCommand action=${intent?.action} flags=$flags startId=$startId")
+
+        val enabled = getSharedPreferences("expense_tracker_settings", MODE_PRIVATE)
+            .getBoolean("service_enabled", false)
 
         if (intent?.getBooleanExtra("STOP", false) == true) {
             Log.d(TAG, "Stop command received")
             stopSelf()
             return START_NOT_STICKY
         }
+
+        // Any start (including the keep-alive worker restarting us after the
+        // system killed or demoted the foreground state) must re-assert the
+        // foreground notification within the 5-second window, otherwise the
+        // system throws ForegroundServiceDidNotStartInTimeException. If the
+        // user has disabled the service, tear it down instead. Note: a user
+        // swipe no longer routes here — it's handled by notificationReceiver
+        // via the deleteIntent broadcast.
         super.onStartCommand(intent, flags, startId)
+        if (enabled) {
+            startForegroundWithType(buildEnabledNotification())
+        } else {
+            stopSelf()
+        }
         return START_STICKY
     }
 
@@ -155,13 +176,35 @@ class NotificationListenerService : NotificationListenerService() {
     }
 
     override fun onTimeout(startId: Int, fgsType: Int) {
-        // Android 14+ FGS timeout hook. Shouldn't fire for the specialUse type,
-        // but handled defensively: refresh the listener binding so the system
-        // reconnects us; the keep-alive worker will re-post the foreground
-        // notification on its next cycle.
+        // Android 14+ FGS timeout hook. Shouldn't fire for the specialUse type
+        // (only dataSync/mediaProcessing are time-limited), but handled
+        // defensively in case an OEM build applies the cap anyway. Per the
+        // contract we MUST stop the service within a few seconds or the system
+        // throws ForegroundServiceDidNotStopInTimeException; then schedule a
+        // restart so the listener + notification come back.
         super.onTimeout(startId, fgsType)
-        Log.d(TAG, "onTimeout(startId=$startId, fgsType=$fgsType) — refreshing listener binding")
+        Log.d(TAG, "onTimeout(startId=$startId, fgsType=$fgsType) — stopping and scheduling restart")
         requestListenerRebind()
+        scheduleRestart()
+        stopSelf()
+    }
+
+    /**
+     * Best-effort self-restart via [ImmediateRestartWorker]. Wrapped in
+     * try/catch so a failure to enqueue (e.g. the specialUse 24h budget being
+     * exhausted on an OEM build) never crashes the service on its way down;
+     * the 15-min keep-alive worker remains as a backstop.
+     */
+    private fun scheduleRestart() {
+        try {
+            val request = OneTimeWorkRequestBuilder<ImmediateRestartWorker>()
+                .setInitialDelay(3, TimeUnit.SECONDS)
+                .build()
+            WorkManager.getInstance(applicationContext)
+                .enqueueUniqueWork("timeout_restart", ExistingWorkPolicy.REPLACE, request)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to schedule restart after timeout", e)
+        }
     }
 
     override fun onDestroy() {
@@ -192,13 +235,16 @@ class NotificationListenerService : NotificationListenerService() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        // On Android 14+ an ongoing FGS notification can be dismissed by the
-        // user. Attach a deleteIntent routed back to this service so onStartCommand
-        // re-posts the notification, keeping the listener persistent.
-        val dismissIntent = Intent(this, NotificationListenerService::class.java).apply {
-            action = ACTION_DISMISS_NOTIFICATION
+        // On Android 13+ a user can swipe away an FGS notification. Route the
+        // deleteIntent as a broadcast (scoped to this package, required on
+        // Android 14) to notificationReceiver, which re-posts via startForeground
+        // — the only call that can restore a dismissed FGS notification. A
+        // broadcast avoids the Android 12+ background-startService restriction
+        // that previously made swiped notifications stay gone.
+        val dismissIntent = Intent(ACTION_DISMISS_NOTIFICATION).apply {
+            setPackage(packageName)
         }
-        val dismissPendingIntent = PendingIntent.getService(
+        val dismissPendingIntent = PendingIntent.getBroadcast(
             this,
             0,
             dismissIntent,
@@ -282,7 +328,7 @@ class NotificationListenerService : NotificationListenerService() {
         }
 
         val fusedClient = LocationServices.getFusedLocationProviderClient(this)
-        return withTimeoutOrNull(5000) {
+        return withTimeoutOrNull(5000.milliseconds) {
             suspendCancellableCoroutine { continuation ->
                 val cancellationTokenSource = com.google.android.gms.tasks.CancellationTokenSource()
 

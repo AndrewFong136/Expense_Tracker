@@ -164,17 +164,43 @@ class AppRepository {
   // ---------------- Settings sync ----------------
   Future<void> sendSettingsToAndroid({
     required bool serviceEnabled,
-    required String webhookUrl,
-    required Map<String, bool> selectedApps,
   }) async {
     try {
       await _channel.invokeMethod<void>('updateSettings', {
         'service_enabled': serviceEnabled,
-        'webhook_url': webhookUrl,
-        'selected_apps': selectedApps,
       });
     } on PlatformException {
       // Swallow — the service may simply not be ready.
+    }
+  }
+
+  // ---------------- Package statuses (filter system) ----------------
+
+  /// Returns the local package -> status map + last sync version from the
+  /// Android side (written by DeltaSyncWorker). Does not hit the network.
+  Future<Map<String, dynamic>> getStatuses() async {
+    try {
+      final result = await _channel.invokeMethod<Map>('getStatuses');
+      if (result == null) {
+        return {'statuses': <String, String>{}, 'version': 0};
+      }
+      final raw = result['statuses'];
+      final statuses = raw is Map
+          ? raw.map((k, v) => MapEntry(k as String, v as String))
+          : <String, String>{};
+      final version = (result['version'] as num?)?.toInt() ?? 0;
+      return {'statuses': statuses, 'version': version};
+    } on PlatformException {
+      return {'statuses': <String, String>{}, 'version': 0};
+    }
+  }
+
+  /// Triggers a one-time delta pull from the API (wake-and-sync).
+  Future<void> syncStatuses() async {
+    try {
+      await _channel.invokeMethod<void>('syncStatuses');
+    } on PlatformException {
+      // Swallow.
     }
   }
 }

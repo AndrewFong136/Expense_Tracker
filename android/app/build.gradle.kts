@@ -4,12 +4,15 @@ plugins {
     id("com.android.application")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
+    // To enable FCM: drop google-services.json into android/app/ and uncomment
+    // the next line (and add the plugin to settings.gradle.kts pluginManagement).
+    id("com.google.gms.google-services")
 }
 
 android {
     namespace = "com.example.expense_tracker"
     compileSdk = 37
-    ndkVersion = "27.0.12077973"
+    ndkVersion = "28.2.13676358"
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
@@ -52,6 +55,8 @@ android {
         implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
         implementation("androidx.work:work-runtime-ktx:2.12.0")
         implementation("com.google.code.gson:gson:2.14.0")
+        implementation(platform("com.google.firebase:firebase-bom:34.19.0"))
+        implementation("com.google.firebase:firebase-messaging")
     }
 }
 

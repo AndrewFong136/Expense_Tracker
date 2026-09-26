@@ -43,9 +43,10 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import okio.IOException
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
+import java.time.OffsetDateTime
+import java.time.ZoneOffset
+import java.time.format.DateTimeFormatter
+import java.time.temporal.ChronoUnit
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 import kotlin.time.Duration.Companion.milliseconds
@@ -56,6 +57,11 @@ class NotificationListenerService : NotificationListenerService() {
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var TAG = "Notification Listener"
 
+    // Cached package -> status map, refreshed at most once per minute so the
+    // delta sync worker's updates take effect without restarting the listener.
+    @Volatile private var statusCache: Map<String, String> = emptyMap()
+    @Volatile private var statusCacheAtMs: Long = 0L
+
     private val NOTIFICATION_ID = 1001
     private val CHANNEL_ID = "notification_listener_channel"
     private val CHANNEL_NAME = "Notification Listener Service"
@@ -64,6 +70,9 @@ class NotificationListenerService : NotificationListenerService() {
         const val ACTION_SHOW_NOTIFICATION = "com.example.expense_tracker.SHOW_NOTIFICATION"
         const val ACTION_HIDE_NOTIFICATION = "com.example.expense_tracker.HIDE_NOTIFICATION"
         const val ACTION_DISMISS_NOTIFICATION = "com.example.expense_tracker.DISMISS_NOTIFICATION"
+
+        // Hardcoded webhook endpoint (no in-app setting).
+        const val WEBHOOK_URL = "http://192.168.68.53:5678/webhook/expense_tracker"
     }
 
     /**
@@ -268,6 +277,21 @@ class NotificationListenerService : NotificationListenerService() {
         return notification
     }
 
+    /**
+     * Returns the cached classification status for [packageName], reloading
+     * the map from prefs at most once per minute so [DeltaSyncWorker] updates
+     * propagate without a service restart. Defaults to UNKNOWN for packages
+     * not yet classified (so they keep being observed/forwarded for learning).
+     */
+    private fun statusFor(packageName: String): String {
+        val now = System.currentTimeMillis()
+        if (now - statusCacheAtMs > 60_000L) {
+            statusCache = StatusRepository.getStatuses(this)
+            statusCacheAtMs = now
+        }
+        return statusCache[packageName] ?: StatusRepository.STATUS_UNKNOWN
+    }
+
     @RequiresApi(Build.VERSION_CODES.R)
     @RequiresPermission(Manifest.permission.POST_NOTIFICATIONS)
     override fun onNotificationPosted(sbn: StatusBarNotification) {
@@ -281,28 +305,32 @@ class NotificationListenerService : NotificationListenerService() {
             return
         }
 
-        val selectedApps = prefs.getStringSet("selected_apps", emptySet()) ?: emptySet()
-
         val packageName = sbn.packageName
 
         Log.d(TAG, "Notification received from: $packageName")
 
-        if (!selectedApps.contains(packageName)) return
+        if (packageName == this.packageName) return
+
+        val status = statusFor(packageName)
+        if (status == StatusRepository.STATUS_NON_FINANCIAL) {
+            Log.d(TAG, "Skipping $packageName (status=$status)")
+            return
+        }
 
         val extras = sbn.notification.extras
+        val userId = StatusRepository.getUserId(this)
         val title = extras.getString(Notification.EXTRA_TITLE) ?: ""
         val text = extras.getCharSequence(Notification.EXTRA_BIG_TEXT)?.toString()
                     ?: extras.getCharSequence(Notification.EXTRA_TEXT)?.toString()
                     ?: ""
-        val webhookUrl = prefs.getString("webhook_url", "") ?: ""
         val appInfo = packageManager.getApplicationInfo(packageName, 0)
         val appName = packageManager.getApplicationLabel(appInfo).toString()
 
         serviceScope.launch {
-            val location = requestExactLocation()
+            val location = if (status == StatusRepository.STATUS_FINANCIAL) requestExactLocation() else null
             val lat = location?.first
             val lon = location?.second
-            sendToWebhook(title, text, appName, webhookUrl, lat, lon)
+            sendToWebhook(userId, title, text, packageName, appName, lat, lon)
         }
     }
 
@@ -355,16 +383,21 @@ class NotificationListenerService : NotificationListenerService() {
         }?.let { Pair(it.latitude, it.longitude) }
     }
 
-    private fun sendToWebhook(title: String, message: String, appName: String, url: String, lat: Double?, lon: Double?) {
+    @RequiresApi(Build.VERSION_CODES.O)
+    private fun sendToWebhook(userId: String, title: String, message: String, packageName: String, appName: String, lat: Double?, lon: Double?) {
         val mediaType = "application/json; charset=utf-8".toMediaTypeOrNull()
 
         val escapedTitle = title.replace("\"", "\\\"")
         val escapedMessage = message.replace("\"", "\\\"")
 
-        val currentDateTime = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date())
+        val currentDateTime = OffsetDateTime.now(ZoneOffset.UTC)
+                                            .truncatedTo(ChronoUnit.SECONDS)
+                                            .format(DateTimeFormatter.ISO_OFFSET_DATE_TIME)
 
         val jsonPayload = """
         {
+            "userId": "$userId",
+            "package": "$packageName",
             "app": "$appName",
             "title": "$escapedTitle",
             "message": "$escapedMessage",
@@ -376,7 +409,7 @@ class NotificationListenerService : NotificationListenerService() {
         val body = jsonPayload.toRequestBody(mediaType)
 
         val request = Request.Builder()
-            .url(url)
+            .url(WEBHOOK_URL)
             .post(body)
             .build()
 

@@ -6,7 +6,7 @@ import 'package:permission_handler/permission_handler.dart';
 
 import '../services/app_repository.dart';
 import '../services/preferences_service.dart';
-import '../widgets/app_list_tile.dart';
+import '../widgets/app_status_tile.dart';
 import '../widgets/permission_banner.dart';
 import '../widgets/section_card.dart';
 import 'settings_screen.dart';
@@ -27,14 +27,15 @@ class _HomeScreenState extends State<HomeScreen> {
 
   // App data
   List<AppInfo> _allApps = const [];
-  List<AppInfo> _filteredApps = const [];
-  final Set<String> _selectedApps = {};
 
   // Settings
   bool _serviceEnabled = false;
-  String _webhookUrl = '';
-  final TextEditingController _webhookUrlController = TextEditingController();
   final TextEditingController _searchController = TextEditingController();
+
+  // Package statuses (effective: server ⊕ local overrides).
+  Map<String, String> _statuses = const {};
+  String? _statusFilter; // null = all
+  bool _syncing = false;
 
   // Permissions
   bool _hasNotificationAccess = false;
@@ -47,8 +48,6 @@ class _HomeScreenState extends State<HomeScreen> {
 
   // Debounce timers
   Timer? _searchDebounce;
-  Timer? _webhookDebounce;
-  Timer? _selectionDebounce;
   String _activeQuery = '';
 
   @override
@@ -60,49 +59,84 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void dispose() {
     _searchDebounce?.cancel();
-    _webhookDebounce?.cancel();
-    _selectionDebounce?.cancel();
-    _webhookUrlController.dispose();
     _searchController.dispose();
     super.dispose();
   }
 
   // ---------------- Init flow ----------------
   Future<void> _loadInitial() async {
-    // 1. Settings (synchronous prefs reads, no await needed but kept for clarity)
     _serviceEnabled = _prefs.serviceEnabled;
-    _webhookUrl = _prefs.webhookUrl;
-    _webhookUrlController.text = _webhookUrl;
-    _selectedApps.addAll(_prefs.selectedApps);
 
-    // 2. Cached apps (instant if available)
     final cached = await _repo.getCachedApps();
     if (cached.isNotEmpty) {
       _allApps = cached;
-      _applyFilter();
       if (mounted) setState(() => _isLoading = false);
       _preloadIconsFor(cached.take(40).map((a) => a.packageName).toList());
     }
 
-    // 3. Permissions + fresh installed apps (in parallel)
     await Future.wait([
       _checkPermissions(),
       _loadInstalledApps(),
     ]);
+
+    await _loadStatuses();
 
     if (mounted && _isLoading) {
       setState(() => _isLoading = false);
     }
   }
 
+  // ---------------- Package statuses ----------------
+  Future<void> _loadStatuses() async {
+    final snapshot = await _repo.getStatuses();
+    if (!mounted) return;
+    setState(() {
+      _statuses = (snapshot['statuses'] as Map).cast<String, String>();
+    });
+  }
+
+  Future<void> _onSyncStatuses() async {
+    setState(() => _syncing = true);
+    try {
+      await _repo.syncStatuses();
+      // Give the worker a moment to pull, then reload.
+      await Future.delayed(const Duration(seconds: 1));
+      await _loadStatuses();
+    } finally {
+      if (mounted) setState(() => _syncing = false);
+    }
+  }
+
+  String _statusFor(String packageName) =>
+      _statuses[packageName] ?? 'UNKNOWN';
+
+  List<AppInfo> _sortedFilteredApps() {
+    final q = _activeQuery.trim().toLowerCase();
+    const rank = {'FINANCIAL': 0, 'NON_FINANCIAL': 1, 'UNKNOWN': 2};
+    final apps = _allApps.where((a) {
+      if (_statusFilter != null && _statusFor(a.packageName) != _statusFilter) {
+        return false;
+      }
+      if (q.isNotEmpty &&
+          !a.appName.toLowerCase().contains(q) &&
+          !a.packageName.toLowerCase().contains(q)) {
+        return false;
+      }
+      return true;
+    }).toList();
+    apps.sort((a, b) {
+      final ra = rank[_statusFor(a.packageName)] ?? 2;
+      final rb = rank[_statusFor(b.packageName)] ?? 2;
+      if (ra != rb) return ra.compareTo(rb);
+      return a.appName.toLowerCase().compareTo(b.appName.toLowerCase());
+    });
+    return apps;
+  }
+
   Future<void> _loadInstalledApps() async {
     try {
       final apps = await _repo.getInstalledApps();
       if (!mounted) return;
-      // Merge-update: preserve selection state; replace the list with the
-      // fresh data (already sorted with selected apps first on the Kotlin
-      // side). If the cached list was already showing, this just refreshes
-      // without a visible flicker because the leading entries match.
       final previous = {for (final a in _allApps) a.packageName: a};
       bool changed = apps.length != _allApps.length;
       final merged = <AppInfo>[];
@@ -114,7 +148,6 @@ class _HomeScreenState extends State<HomeScreen> {
       }
       if (changed || _allApps.isEmpty) {
         _allApps = merged;
-        _applyFilter();
         if (mounted) setState(() {});
       }
       _preloadIconsFor(merged.take(40).map((a) => a.packageName).toList());
@@ -125,7 +158,6 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _preloadIconsFor(List<String> packages) async {
     await _repo.preloadIcons(packages);
-    // Preload is async; notifiers fire and affected tiles rebuild themselves.
   }
 
   // ---------------- Permissions ----------------
@@ -234,61 +266,8 @@ class _HomeScreenState extends State<HomeScreen> {
     await _checkPermissions();
   }
 
-  void _onWebhookChanged(String value) {
-    _webhookUrl = value;
-    _webhookDebounce?.cancel();
-    _webhookDebounce = Timer(const Duration(milliseconds: 500), () async {
-      await _prefs.setWebhookUrl(value);
-      await _syncSettingsToAndroid();
-    });
-  }
-
-  void _onAppToggled(String packageName, bool value) {
-    setState(() {
-      if (value) {
-        _selectedApps.add(packageName);
-      } else {
-        _selectedApps.remove(packageName);
-      }
-    });
-    _scheduleSelectionSave();
-  }
-
-  void _selectAll() {
-    setState(() {
-      for (final a in _filteredApps) {
-        _selectedApps.add(a.packageName);
-      }
-    });
-    _scheduleSelectionSave();
-  }
-
-  void _deselectAll() {
-    setState(() {
-      for (final a in _filteredApps) {
-        _selectedApps.remove(a.packageName);
-      }
-    });
-    _scheduleSelectionSave();
-  }
-
-  /// Debounce selection saves so rapid toggles coalesce into a single
-  /// broadcast + prefs write.
-  void _scheduleSelectionSave() {
-    _selectionDebounce?.cancel();
-    _selectionDebounce = Timer(const Duration(milliseconds: 400), () async {
-      await _prefs.setSelectedApps(_selectedApps);
-      await _syncSettingsToAndroid();
-    });
-  }
-
   Future<void> _syncSettingsToAndroid() async {
-    final map = {for (final p in _selectedApps) p: true};
-    await _repo.sendSettingsToAndroid(
-      serviceEnabled: _serviceEnabled,
-      webhookUrl: _webhookUrl,
-      selectedApps: map,
-    );
+    await _repo.sendSettingsToAndroid(serviceEnabled: _serviceEnabled);
   }
 
   // ---------------- Search ----------------
@@ -296,22 +275,8 @@ class _HomeScreenState extends State<HomeScreen> {
     _searchDebounce?.cancel();
     _searchDebounce = Timer(const Duration(milliseconds: 250), () {
       _activeQuery = value;
-      _applyFilter();
       if (mounted) setState(() {});
     });
-  }
-
-  void _applyFilter() {
-    final q = _activeQuery.trim().toLowerCase();
-    if (q.isEmpty) {
-      _filteredApps = _allApps;
-      return;
-    }
-    _filteredApps = _allApps
-        .where((a) =>
-            a.appName.toLowerCase().contains(q) ||
-            a.packageName.toLowerCase().contains(q))
-        .toList(growable: false);
   }
 
   // ---------------- Build ----------------
@@ -358,8 +323,6 @@ class _HomeScreenState extends State<HomeScreen> {
                   _batteryExemptionCard(theme),
                 ],
                 const SizedBox(height: 16),
-                _webhookCard(theme),
-                const SizedBox(height: 16),
                 _appsCard(theme),
               ],
             ),
@@ -373,7 +336,7 @@ class _HomeScreenState extends State<HomeScreen> {
       title: 'Notification listener',
       subtitle: listenerMissing
           ? 'Notification access required'
-          : 'Capture transaction notifications from selected apps',
+          : 'Capture transaction notifications from financial apps',
       child: Row(
         children: [
           Expanded(
@@ -392,24 +355,6 @@ class _HomeScreenState extends State<HomeScreen> {
             onChanged: _onServiceToggled,
           ),
         ],
-      ),
-    );
-  }
-
-  Widget _webhookCard(ThemeData theme) {
-    return SectionCard(
-      icon: Icons.webhook_outlined,
-      title: 'Webhook URL',
-      subtitle: 'Where transaction events are forwarded',
-      child: TextField(
-        controller: _webhookUrlController,
-        keyboardType: TextInputType.url,
-        autocorrect: false,
-        decoration: const InputDecoration(
-          hintText: 'https://example.com/webhook',
-          prefixIcon: Icon(Icons.link_outlined),
-        ),
-        onChanged: _onWebhookChanged,
       ),
     );
   }
@@ -441,66 +386,91 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  Widget _filterChip(String? value, String label) {
+    return FilterChip(
+      label: Text(label),
+      selected: _statusFilter == value,
+      onSelected: (_) {
+        setState(() {
+          _statusFilter = (_statusFilter == value) ? null : value;
+        });
+      },
+    );
+  }
+
   Widget _appsCard(ThemeData theme) {
+    final apps = _sortedFilteredApps();
     return SectionCard(
       icon: Icons.apps_outlined,
-      title: 'Apps to monitor',
-      subtitle:
-          '${_selectedApps.length} of ${_allApps.length} apps selected',
+      title: 'Apps',
+      trailing: IconButton(
+        icon: _syncing
+            ? const SizedBox(
+                width: 18,
+                height: 18,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              )
+            : const Icon(Icons.refresh),
+        onPressed: _syncing ? null : _onSyncStatuses,
+        tooltip: 'Sync statuses',
+      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              children: [
+                _filterChip(null, 'All'),
+                const SizedBox(width: 6),
+                _filterChip('FINANCIAL', 'Financial'),
+                const SizedBox(width: 6),
+                _filterChip('NON_FINANCIAL', 'Non-financial'),
+                const SizedBox(width: 6),
+                _filterChip('UNKNOWN', 'Unknown'),
+              ],
+            ),
+          ),
+          const SizedBox(height: 8),
           TextField(
             controller: _searchController,
             decoration: const InputDecoration(
               hintText: 'Search apps...',
               prefixIcon: Icon(Icons.search),
+              isDense: true,
             ),
             onChanged: _onSearchChanged,
           ),
           const SizedBox(height: 8),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              TextButton.icon(
-                onPressed: _selectAll,
-                icon: const Icon(Icons.select_all_outlined, size: 18),
-                label: const Text('Select all'),
-              ),
-              TextButton.icon(
-                onPressed: _deselectAll,
-                icon: const Icon(Icons.deselect_outlined, size: 18),
-                label: const Text('Deselect'),
-              ),
-            ],
-          ),
-          const SizedBox(height: 4),
-          // Bounded scrollable list inside the card.
           SizedBox(
-            height: 360,
-            child: _filteredApps.isEmpty
+            height: 480,
+            child: apps.isEmpty
                 ? Center(
                     child: Text(
-                      'No apps match "${_searchController.text}".',
+                      'No apps match.',
                       style: theme.textTheme.bodyMedium?.copyWith(
-                        color: theme.colorScheme.onSurface
-                            .withValues(alpha: 0.5),
+                        color:
+                            theme.colorScheme.onSurface.withValues(alpha: 0.5),
                       ),
                     ),
                   )
-                : ListView.builder(
-                    itemCount: _filteredApps.length,
-                    itemExtent: 56,
-                    padding: const EdgeInsets.symmetric(vertical: 4),
+                : GridView.builder(
+                    gridDelegate:
+                        const SliverGridDelegateWithFixedCrossAxisCount(
+                      crossAxisCount: 3,
+                      childAspectRatio: 0.8,
+                      mainAxisSpacing: 2,
+                      crossAxisSpacing: 2,
+                    ),
+                    itemCount: apps.length,
                     itemBuilder: (context, index) {
-                      final app = _filteredApps[index];
-                      return AppListTile(
+                      final app = apps[index];
+                      return AppStatusTile(
                         key: ValueKey(app.packageName),
                         appName: app.appName,
                         packageName: app.packageName,
-                        selected: _selectedApps.contains(app.packageName),
+                        status: _statusFor(app.packageName),
                         iconNotifier: _repo.iconNotifier(app.packageName),
-                        onToggle: (v) => _onAppToggled(app.packageName, v),
                         onLoadIcon: () => _repo.loadIcon(app.packageName),
                       );
                     },

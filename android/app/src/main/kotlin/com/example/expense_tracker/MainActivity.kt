@@ -10,6 +10,7 @@ import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.Drawable
 import android.os.Build
 import android.provider.Settings
+import android.util.Log
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import androidx.core.content.edit
@@ -62,10 +63,7 @@ class MainActivity : FlutterActivity() {
             ))
         }
 
-        val prefs = getSharedPreferences("expense_tracker_settings", MODE_PRIVATE)
-        val selectedSet = prefs.getStringSet("selected_apps", emptySet()) ?: emptySet()
-
-        apps.sortWith(compareByDescending<Map<String, String>> { selectedSet.contains(it["packageName"]) }.thenBy{ it["appName"] })
+        apps.sortBy { it["appName"] }
         return apps
     }
 
@@ -120,19 +118,10 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    private fun saveSettings(serviceEnabled: Boolean, webhookUrl: String, selectedApps: Map<String, Boolean>) {
+    private fun saveSettings(serviceEnabled: Boolean) {
         val prefs = getSharedPreferences("expense_tracker_settings", MODE_PRIVATE)
         prefs.edit {
             putBoolean("service_enabled", serviceEnabled)
-            putString("webhook_url", webhookUrl)
-
-            val selectedAppsList = HashSet<String>()
-            selectedApps.forEach { (app, enabled) ->
-                if (enabled) {
-                    selectedAppsList.add(app)
-                }
-            }
-            putStringSet("selected_apps", selectedAppsList)
         }
     }
 
@@ -140,6 +129,8 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        scheduleStatusSync()
+        registerFcmToken()
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL).setMethodCallHandler { call, result ->
             when (call.method) {
                 "isAppNotificationEnabled" -> {
@@ -224,10 +215,8 @@ class MainActivity : FlutterActivity() {
                 }
                 "updateSettings" -> {
                     val serviceEnabled = call.argument<Boolean>("service_enabled") ?: false
-                    val webhookUrl = call.argument<String>("webhook_url") ?: ""
-                    val selectedApps = call.argument<Map<String, Boolean>>("selected_apps") ?: emptyMap()
-                    
-                    saveSettings(serviceEnabled, webhookUrl, selectedApps)
+
+                    saveSettings(serviceEnabled)
 
                     val action = if (serviceEnabled) {
                         NotificationListenerService.ACTION_SHOW_NOTIFICATION
@@ -267,10 +256,72 @@ class MainActivity : FlutterActivity() {
 
                     result.success(null)
                 }
+                "syncStatuses" -> {
+                    val constraints = Constraints.Builder()
+                        .setRequiredNetworkType(NetworkType.CONNECTED)
+                        .build()
+                    val oneShot = OneTimeWorkRequestBuilder<DeltaSyncWorker>()
+                        .setConstraints(constraints)
+                        .build()
+                    WorkManager.getInstance(this).enqueueUniqueWork(
+                        DeltaSyncWorker.UNIQUE_ONESHOT,
+                        ExistingWorkPolicy.REPLACE,
+                        oneShot
+                    )
+                    result.success(null)
+                }
+                "getStatuses" -> {
+                    val statuses = StatusRepository.getStatuses(this)
+                    val version = StatusRepository.getLastKnownVersion(this)
+                    result.success(mapOf(
+                        "statuses" to statuses,
+                        "version" to version
+                    ))
+                }
                 else -> {
                     result.notImplemented()
                 }
             }
+        }
+    }
+
+    /** Schedule the 24h periodic delta pull + a one-time startup pull. */
+    private fun scheduleStatusSync() {
+        val constraints = Constraints.Builder()
+            .setRequiredNetworkType(NetworkType.CONNECTED)
+            .build()
+        val periodic = PeriodicWorkRequestBuilder<DeltaSyncWorker>(24, TimeUnit.HOURS)
+            .setConstraints(constraints)
+            .setInitialDelay(10, TimeUnit.SECONDS)
+            .build()
+        WorkManager.getInstance(this).enqueueUniquePeriodicWork(
+            DeltaSyncWorker.UNIQUE_PERIODIC,
+            ExistingPeriodicWorkPolicy.KEEP,
+            periodic
+        )
+        val oneShot = OneTimeWorkRequestBuilder<DeltaSyncWorker>()
+            .setConstraints(constraints)
+            .setInitialDelay(2, TimeUnit.SECONDS)
+            .build()
+        WorkManager.getInstance(this).enqueueUniqueWork(
+            DeltaSyncWorker.UNIQUE_ONESHOT,
+            ExistingWorkPolicy.KEEP,
+            oneShot
+        )
+    }
+
+    /** Best-effort FCM token registration */
+    private fun registerFcmToken() {
+        try {
+            com.google.firebase.messaging.FirebaseMessaging.getInstance().token
+                .addOnSuccessListener { token ->
+                    FilterMessagingService.registerToken(this, token)
+                }
+                .addOnFailureListener { e ->
+                    Log.w("MainActivity", "FCM token unavailable: ${e.message}")
+                }
+        } catch (e: Exception) {
+            Log.w("MainActivity", "Firebase unavailable, skipping FCM token registration")
         }
     }
 }

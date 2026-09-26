@@ -8,8 +8,6 @@ class PreferencesService {
   PreferencesService._(this._prefs, this.themeMode);
 
   static const _kServiceEnabled = 'service_enabled';
-  static const _kWebhookUrl = 'webhook_url';
-  static const _kSelectedApps = 'selected_apps';
   static const _kThemeMode = 'theme_mode';
 
   final SharedPreferences _prefs;
@@ -35,17 +33,6 @@ class PreferencesService {
   bool get serviceEnabled => _prefs.getBool(_kServiceEnabled) ?? false;
   Future<void> setServiceEnabled(bool value) =>
       _prefs.setBool(_kServiceEnabled, value);
-
-  // ---- Webhook URL ----
-  String get webhookUrl => _prefs.getString(_kWebhookUrl) ?? '';
-  Future<void> setWebhookUrl(String value) =>
-      _prefs.setString(_kWebhookUrl, value);
-
-  // ---- Selected apps ----
-  Set<String> get selectedApps =>
-      (_prefs.getStringList(_kSelectedApps) ?? <String>[]).toSet();
-  Future<void> setSelectedApps(Set<String> apps) =>
-      _prefs.setStringList(_kSelectedApps, apps.toList());
 
   String _encodeThemeMode(ThemeMode mode) {
     switch (mode) {

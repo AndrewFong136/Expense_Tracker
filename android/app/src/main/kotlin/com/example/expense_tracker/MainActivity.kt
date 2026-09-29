@@ -218,13 +218,6 @@ class MainActivity : FlutterActivity() {
 
                     saveSettings(serviceEnabled)
 
-                    val action = if (serviceEnabled) {
-                        NotificationListenerService.ACTION_SHOW_NOTIFICATION
-                    } else {
-                        NotificationListenerService.ACTION_HIDE_NOTIFICATION
-                    }
-                    sendBroadcast(Intent(action).setPackage(packageName))
-
                     if (serviceEnabled) {
                         val constraints = Constraints.Builder()
                             .setRequiredNetworkType(NetworkType.NOT_REQUIRED)

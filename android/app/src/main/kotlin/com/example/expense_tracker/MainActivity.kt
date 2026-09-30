@@ -33,6 +33,7 @@ import java.io.File
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import kotlin.concurrent.thread
 
 class MainActivity : FlutterActivity() {
 
@@ -218,35 +219,27 @@ class MainActivity : FlutterActivity() {
 
                     saveSettings(serviceEnabled)
 
+                    // Retire the legacy 15-min WorkManager keep-alive (now an AlarmManager 4am job).
+                    WorkManager.getInstance(this).cancelUniqueWork("service_keep_alive")
+
                     if (serviceEnabled) {
-                        val constraints = Constraints.Builder()
-                            .setRequiredNetworkType(NetworkType.NOT_REQUIRED)
-                            .build()
-                        val workRequest = PeriodicWorkRequestBuilder<ServiceKeepAliveWorker>(15, TimeUnit.MINUTES)
-                            .setConstraints(constraints)
-                            .setInitialDelay(1, TimeUnit.MINUTES)
-                            .build()
-                        WorkManager.getInstance(this).enqueueUniquePeriodicWork(
-                            "service_keep_alive",
-                            ExistingPeriodicWorkPolicy.KEEP,
-                            workRequest
-                        )
+                        KeepAliveScheduler.scheduleNext(this)
                     } else {
-                        WorkManager.getInstance(this).cancelUniqueWork("service_keep_alive")
+                        KeepAliveScheduler.cancel(this)
                     }
 
                     result.success(null)
                 }
                 "rebindListener" -> {
-                    val workRequest = OneTimeWorkRequestBuilder<ImmediateRestartWorker>()
-                        .setInitialDelay(1, TimeUnit.SECONDS)
-                        .build()
-                    WorkManager.getInstance(this).enqueueUniqueWork(
-                        "immediate_restart",
-                        ExistingWorkPolicy.KEEP,
-                        workRequest
-                    )
-
+                    // Ask the system to rebind the listener. requestRebind is a
+                    // quick system call; run it off the platform thread.
+                    thread {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N_MR1) {
+                            android.service.notification.NotificationListenerService.requestRebind(
+                                ComponentName(this, NotificationListenerService::class.java)
+                            )
+                        }
+                    }
                     result.success(null)
                 }
                 "syncStatuses" -> {

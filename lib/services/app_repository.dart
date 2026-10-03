@@ -161,6 +161,17 @@ class AppRepository {
     await _channel.invokeMethod<void>('rebindListener');
   }
 
+  /// Per-install UUID (generated + persisted on the Kotlin side). Used as the
+  /// opaque user_id for API calls (/dashboard, /user-settings).
+  Future<String> getUserId() async {
+    try {
+      final id = await _channel.invokeMethod<String>('getUserId');
+      return id ?? '';
+    } on PlatformException {
+      return '';
+    }
+  }
+
   // ---------------- Settings sync ----------------
   Future<void> sendSettingsToAndroid({
     required bool serviceEnabled,

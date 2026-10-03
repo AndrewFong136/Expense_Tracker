@@ -9,6 +9,7 @@ class PreferencesService {
 
   static const _kServiceEnabled = 'service_enabled';
   static const _kThemeMode = 'theme_mode';
+  static const _kUserSettingsInitialized = 'user_settings_initialized';
 
   final SharedPreferences _prefs;
 
@@ -33,6 +34,12 @@ class PreferencesService {
   bool get serviceEnabled => _prefs.getBool(_kServiceEnabled) ?? false;
   Future<void> setServiceEnabled(bool value) =>
       _prefs.setBool(_kServiceEnabled, value);
+
+  // ---- First-launch user-settings POST (so /dashboard doesn't 404) ----
+  bool get userSettingsInitialized =>
+      _prefs.getBool(_kUserSettingsInitialized) ?? false;
+  Future<void> setUserSettingsInitialized(bool value) =>
+      _prefs.setBool(_kUserSettingsInitialized, value);
 
   String _encodeThemeMode(ThemeMode mode) {
     switch (mode) {

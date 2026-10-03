@@ -249,6 +249,10 @@ class MainActivity : FlutterActivity() {
 
                     result.success(null)
                 }
+                "getUserId" -> {
+                    //result.success(StatusRepository.getUserId(this))
+                    result.success("11111111-1111-1111-1111-111111111111")
+                }
                 "syncStatuses" -> {
                     val constraints = Constraints.Builder()
                         .setRequiredNetworkType(NetworkType.CONNECTED)

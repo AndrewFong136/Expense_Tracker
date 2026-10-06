@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 
 import '../services/api_client.dart';
@@ -37,6 +39,7 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void initState() {
     super.initState();
+    _loadFromCache();
     _load();
     widget.dashboardRev.addListener(_onRevChanged);
   }
@@ -47,10 +50,32 @@ class _HomeScreenState extends State<HomeScreen> {
     super.dispose();
   }
 
+  /// Instant load from cache (stale-while-revalidate). Renders the home screen
+  /// immediately from the last successful /dashboard response, before the
+  /// network refresh completes.
+  Future<void> _loadFromCache() async {
+    final cached = await _api.getCachedDashboardJson();
+    if (cached == null || _dash != null) return;
+    try {
+      final d = Dashboard.fromJson(jsonDecode(cached) as Map<String, dynamic>);
+      if (!mounted) return;
+      final today = DateTime.now();
+      setState(() {
+        _dash = d;
+        _weekSummary = d.week;
+        _selectedWeekStart = _mondayOf(today);
+        _selectedDay = _dateOnly(today);
+        _loading = false;
+      });
+      _fetchTransactions();
+    } catch (_) {}
+  }
+
   void _onRevChanged() => _load(silent: true);
 
   Future<void> _load({bool silent = false}) async {
-    if (!silent) {
+    final effectiveSilent = silent || _dash != null;
+    if (!effectiveSilent) {
       setState(() {
         _loading = true;
         _error = null;
@@ -65,8 +90,9 @@ class _HomeScreenState extends State<HomeScreen> {
           _retried = true;
           await Future.delayed(const Duration(seconds: 2));
           if (!mounted) return;
-          return _load(silent: silent);
+          return _load(silent: effectiveSilent);
         }
+        if (effectiveSilent) return;
         setState(() {
           _error = 'Setting up your budget — tap retry in a moment.';
           _loading = false;
@@ -91,10 +117,10 @@ class _HomeScreenState extends State<HomeScreen> {
       if (isFirstLoad) _fetchTransactions();
     } catch (e) {
       if (!mounted) return;
-      if (silent) return;
+      if (effectiveSilent) return;
       setState(() {
         _error =
-            "Can't reach the server — check you're on the same network as 192.168.68.53";
+            "Can't reach the server";
         _loading = false;
       });
     }

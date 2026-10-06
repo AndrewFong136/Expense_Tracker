@@ -54,7 +54,7 @@ class NotificationListenerService : NotificationListenerService() {
     /**
      * Re-request the system's notification-listener binding. No-op below API 25
      * where requestRebind isn't available. Called from [onListenerDisconnected]
-     * (and from the keep-alive worker) to recover a dropped binding.
+     * to recover a dropped binding.
      */
     private fun requestListenerRebind() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N_MR1) {
@@ -78,7 +78,7 @@ class NotificationListenerService : NotificationListenerService() {
         // waiting for the next notification or the 15-min keep-alive worker.
         super.onListenerDisconnected()
         Log.d(TAG, "Listener disconnected — requesting rebind")
-        requestListenerRebind()
+        requestListenerRebind();
     }
 
     /**
@@ -99,17 +99,6 @@ class NotificationListenerService : NotificationListenerService() {
     @RequiresApi(Build.VERSION_CODES.R)
     @RequiresPermission(Manifest.permission.POST_NOTIFICATIONS)
     override fun onNotificationPosted(sbn: StatusBarNotification) {
-        val prefs = getSharedPreferences("expense_tracker_settings", MODE_PRIVATE)
-        val serviceEnabled = prefs.getBoolean("service_enabled", false)
-
-        Log.d(TAG, "Service Enabled: $serviceEnabled")
-
-        if (!serviceEnabled) {
-            // Forwarding is gated by the pref; the listener itself is system-bound
-            // and stays ready regardless.
-            return
-        }
-
         val packageName = sbn.packageName
 
         Log.d(TAG, "Notification received from: $packageName")

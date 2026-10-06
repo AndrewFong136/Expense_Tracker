@@ -161,6 +161,24 @@ class AppRepository {
     await _channel.invokeMethod<void>('rebindListener');
   }
 
+  /// Detect MIUI / HyperOS.
+  Future<bool> isMiui() async {
+    try {
+      return await _channel.invokeMethod<bool>('isMiui') ?? false;
+    } on PlatformException {
+      return false;
+    }
+  }
+
+  /// Open the MIUI autostart settings (fallback: app details).
+  Future<void> openMiuiAutostart() async {
+    try {
+      await _channel.invokeMethod<void>('openMiuiAutostart');
+    } on PlatformException {
+      // Swallow.
+    }
+  }
+
   /// Per-install UUID (generated + persisted on the Kotlin side). Used as the
   /// opaque user_id for API calls (/dashboard, /user-settings).
   Future<String> getUserId() async {
@@ -169,19 +187,6 @@ class AppRepository {
       return id ?? '';
     } on PlatformException {
       return '';
-    }
-  }
-
-  // ---------------- Settings sync ----------------
-  Future<void> sendSettingsToAndroid({
-    required bool serviceEnabled,
-  }) async {
-    try {
-      await _channel.invokeMethod<void>('updateSettings', {
-        'service_enabled': serviceEnabled,
-      });
-    } on PlatformException {
-      // Swallow — the service may simply not be ready.
     }
   }
 

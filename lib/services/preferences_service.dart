@@ -7,7 +7,6 @@ import 'package:shared_preferences/shared_preferences.dart';
 class PreferencesService {
   PreferencesService._(this._prefs, this.themeMode);
 
-  static const _kServiceEnabled = 'service_enabled';
   static const _kThemeMode = 'theme_mode';
   static const _kUserSettingsInitialized = 'user_settings_initialized';
 
@@ -29,11 +28,6 @@ class PreferencesService {
     themeMode.value = mode;
     await _prefs.setString(_kThemeMode, _encodeThemeMode(mode));
   }
-
-  // ---- Service enabled ----
-  bool get serviceEnabled => _prefs.getBool(_kServiceEnabled) ?? false;
-  Future<void> setServiceEnabled(bool value) =>
-      _prefs.setBool(_kServiceEnabled, value);
 
   // ---- First-launch user-settings POST (so /dashboard doesn't 404) ----
   bool get userSettingsInitialized =>

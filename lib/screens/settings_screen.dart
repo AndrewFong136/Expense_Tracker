@@ -24,7 +24,7 @@ class SettingsScreen extends StatefulWidget {
   State<SettingsScreen> createState() => _SettingsScreenState();
 }
 
-class _SettingsScreenState extends State<SettingsScreen> {
+class _SettingsScreenState extends State<SettingsScreen> with WidgetsBindingObserver {
   late final AppRepository _repo = widget.repo;
   late final PreferencesService _prefs = widget.prefs;
   late final ApiClient _api = widget.api;
@@ -33,7 +33,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
   List<AppInfo> _allApps = const [];
 
   // Settings
-  bool _serviceEnabled = false;
   final TextEditingController _searchController = TextEditingController();
 
   // Package statuses (server-synced).
@@ -58,15 +57,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
   String _userId = '';
   bool _incomeManual = false; // incomeMode == "manual"
   final TextEditingController _incomeController = TextEditingController();
+  MonthSummary? _monthSummary;
+  String _currency = '';
+  bool _isMiui = false;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _loadInitial();
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _searchDebounce?.cancel();
     _searchController.dispose();
     _incomeController.dispose();
@@ -75,7 +79,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   // ---------------- Init flow ----------------
   Future<void> _loadInitial() async {
-    _serviceEnabled = _prefs.serviceEnabled;
 
     final cached = await _repo.getCachedApps();
     if (cached.isNotEmpty) {
@@ -97,6 +100,25 @@ class _SettingsScreenState extends State<SettingsScreen> {
     // Fire-and-forget: don't block the Settings screen on the network. The
     // Monthly Income card shows defaults until this returns (or times out).
     _loadUserSettings();
+    _loadMonth();
+    _checkMiui();
+  }
+
+  Future<void> _loadMonth() async {
+    try {
+      if (_userId.isEmpty) _userId = await _repo.getUserId();
+      final d = await _api.getDashboard(_userId);
+      if (!mounted) return;
+      setState(() {
+        _monthSummary = d?.month;
+        _currency = d?.currency ?? '';
+      });
+    } catch (_) {}
+  }
+
+  Future<void> _checkMiui() async {
+    final mi = await _repo.isMiui();
+    if (mounted) setState(() => _isMiui = mi);
   }
 
   // ---------------- User settings (income) ----------------
@@ -225,6 +247,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final loc = await _repo.isLocationAlwaysEnabled();
     final battery = await Permission.ignoreBatteryOptimizations.status;
 
+
     if (!mounted) return;
     setState(() {
       _hasNotificationAccess = notif;
@@ -233,10 +256,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _hasBatteryExemption = battery.isGranted;
     });
 
-    if (_hasNotificationAccess && _serviceEnabled) {
+    if (_hasNotificationAccess) {
       await _repo.rebindListener();
     }
-    await _syncSettingsToAndroid();
   }
 
   Future<void> _requestAppNotifications() async {
@@ -283,18 +305,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _requestBatteryExemption() async {
-    final status = await Permission.ignoreBatteryOptimizations.request();
-    if (mounted) {
-      setState(() => _hasBatteryExemption = status.isGranted);
-    }
-    if (!status.isGranted && mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-              'Set this app to "Not optimized" so the listener isn\'t killed after a few hours.'),
-        ),
-      );
-    }
+    await Permission.ignoreBatteryOptimizations.request();
   }
 
   Future<void> _requestAllMissingPermissions() async {
@@ -310,22 +321,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
     await _checkPermissions();
   }
 
-  // ---------------- Settings changes ----------------
-  Future<void> _onServiceToggled(bool value) async {
-    setState(() => _serviceEnabled = value);
-    await _prefs.setServiceEnabled(value);
-    if (value &&
-        (!_hasNotificationAccess ||
-            !_hasLocationAlwaysEnabled ||
-            !_hasAppNotificationsEnabled)) {
-      await _requestAllMissingPermissions();
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _recheckBatteryExemption();
     }
-    await _syncSettingsToAndroid();
-    await _checkPermissions();
   }
 
-  Future<void> _syncSettingsToAndroid() async {
-    await _repo.sendSettingsToAndroid(serviceEnabled: _serviceEnabled);
+  Future<void> _recheckBatteryExemption() async {
+    final status = await Permission.ignoreBatteryOptimizations.status;
+    if (!mounted) return;
+    if (status.isGranted != _hasBatteryExemption) {
+      setState(() => _hasBatteryExemption = status.isGranted);
+    }
   }
 
   // ---------------- Search ----------------
@@ -377,9 +385,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   const SizedBox(height: 16),
                 ],
                 _listenerCard(theme),
-                if (_serviceEnabled && !_hasBatteryExemption) ...[
+                if (!_hasBatteryExemption) ...[
                   const SizedBox(height: 16),
                   _batteryExemptionCard(theme),
+                ],
+                if (_isMiui) ...[
+                  const SizedBox(height: 16),
+                  _miuiCard(theme),
                 ],
                 const SizedBox(height: 16),
                 _appsCard(theme),
@@ -438,13 +450,75 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ],
             ),
           ],
+          if (_monthSummary != null) ...[
+            const SizedBox(height: 16),
+            Row(
+              children: [
+                Text('Income received',
+                    style: theme.textTheme.bodySmall?.copyWith(color: muted)),
+                const Spacer(),
+                Text(
+                  _monthSummary!.isFulfilled ? 'Fulfilled' : 'Not fulfilled',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: _monthSummary!.isFulfilled ? Colors.green : Colors.red,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(6),
+              child: LinearProgressIndicator(
+                value: _monthSummary!.incomeExpectedNum > 0
+                    ? (_monthSummary!.incomeReceivedNum /
+                            _monthSummary!.incomeExpectedNum)
+                        .clamp(0.0, 1.0)
+                    : 0.0,
+                minHeight: 8,
+                backgroundColor: theme.colorScheme.onSurface.withValues(alpha: 0.1),
+                color: _monthSummary!.isFulfilled ? Colors.green : theme.colorScheme.primary,
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              '${_monthSummary!.incomeReceivedNum.toStringAsFixed(2)} / ${_monthSummary!.incomeExpectedNum.toStringAsFixed(2)} $_currency',
+              style: theme.textTheme.bodySmall?.copyWith(color: muted),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _miuiCard(ThemeData theme) {
+    return SectionCard(
+      icon: Icons.security_outlined,
+      title: 'Autostart',
+      subtitle: 'Required on Xiaomi / HyperOS to keep the listener alive',
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              'Enable autostart for this app in MIUI settings so the system doesn\'t kill the listener.',
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
+                height: 1.4,
+              ),
+            ),
+          ),
+          const SizedBox(width: 12),
+          FilledButton(
+            onPressed: () => _repo.openMiuiAutostart(),
+            child: const Text('Open'),
+          ),
         ],
       ),
     );
   }
 
   Widget _listenerCard(ThemeData theme) {
-    final listenerMissing = !_hasNotificationAccess && _serviceEnabled;
+    final listenerMissing = !_hasNotificationAccess;
     return SectionCard(
       icon: Icons.notifications_active_outlined,
       title: 'Notification listener',
@@ -455,18 +529,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
         children: [
           Expanded(
             child: Text(
-              _serviceEnabled ? 'Enabled' : 'Disabled',
+              _hasNotificationAccess ? 'Connected' : 'Not connected',
               style: theme.textTheme.bodyLarge?.copyWith(
-                color: _serviceEnabled
+                color: _hasNotificationAccess
                     ? theme.colorScheme.primary
                     : theme.colorScheme.onSurface.withValues(alpha: 0.6),
                 fontWeight: FontWeight.w600,
               ),
             ),
           ),
-          Switch(
-            value: _serviceEnabled,
-            onChanged: _onServiceToggled,
+          OutlinedButton.icon(
+            onPressed: _hasNotificationAccess
+                ? () => _repo.rebindListener()
+                : () => _repo.requestNotificationListenerAccess(),
+            icon: const Icon(Icons.refresh, size: 18),
+            label: Text(_hasNotificationAccess ? 'Rebind' : 'Enable'),
           ),
         ],
       ),

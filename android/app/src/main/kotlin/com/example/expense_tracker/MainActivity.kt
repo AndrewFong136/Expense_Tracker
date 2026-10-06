@@ -118,13 +118,6 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    private fun saveSettings(serviceEnabled: Boolean) {
-        val prefs = getSharedPreferences("expense_tracker_settings", MODE_PRIVATE)
-        prefs.edit {
-            putBoolean("service_enabled", serviceEnabled)
-        }
-    }
-
     private val CHANNEL = "com.example.expense_tracker/settings"
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -213,40 +206,15 @@ class MainActivity : FlutterActivity() {
                         result.success(resultMap)
                     }
                 }
-                "updateSettings" -> {
-                    val serviceEnabled = call.argument<Boolean>("service_enabled") ?: false
-
-                    saveSettings(serviceEnabled)
-
-                    if (serviceEnabled) {
-                        val constraints = Constraints.Builder()
-                            .setRequiredNetworkType(NetworkType.NOT_REQUIRED)
-                            .build()
-                        val workRequest = PeriodicWorkRequestBuilder<ServiceKeepAliveWorker>(15, TimeUnit.MINUTES)
-                            .setConstraints(constraints)
-                            .setInitialDelay(1, TimeUnit.MINUTES)
-                            .build()
-                        WorkManager.getInstance(this).enqueueUniquePeriodicWork(
-                            "service_keep_alive",
-                            ExistingPeriodicWorkPolicy.KEEP,
-                            workRequest
-                        )
-                    } else {
-                        WorkManager.getInstance(this).cancelUniqueWork("service_keep_alive")
-                    }
-
+                "rebindListener" -> {
+                    toggleNotificationListenerService()
                     result.success(null)
                 }
-                "rebindListener" -> {
-                    val workRequest = OneTimeWorkRequestBuilder<ImmediateRestartWorker>()
-                        .setInitialDelay(1, TimeUnit.SECONDS)
-                        .build()
-                    WorkManager.getInstance(this).enqueueUniqueWork(
-                        "immediate_restart",
-                        ExistingWorkPolicy.KEEP,
-                        workRequest
-                    )
-
+                "isMiui" -> {
+                    result.success(isMiui())
+                }
+                "openMiuiAutostart" -> {
+                    openMiuiAutostart()
                     result.success(null)
                 }
                 "getUserId" -> {
@@ -279,6 +247,40 @@ class MainActivity : FlutterActivity() {
                     result.notImplemented()
                 }
             }
+        }
+    }
+
+    /** Force-rebind the notification listener by toggling its component. */
+    private fun toggleNotificationListenerService() {
+        val pm = packageManager
+        val cn = ComponentName(this, NotificationListenerService::class.java)
+        pm.setComponentEnabledSetting(
+            cn,
+            PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
+            PackageManager.DONT_KILL_APP
+        )
+        pm.setComponentEnabledSetting(
+            cn,
+            PackageManager.COMPONENT_ENABLED_STATE_ENABLED,
+            PackageManager.DONT_KILL_APP
+        )
+    }
+
+    /** Detect MIUI / HyperOS. */
+    private fun isMiui(): Boolean {
+        return Build.MANUFACTURER.equals("xiaomi", ignoreCase = true)
+    }
+
+    /** Open the MIUI autostart settings (fallback: app details). */
+    private fun openMiuiAutostart() {
+        try {
+            val intent = Intent("miui.intent.action.OP_AUTO_START")
+            intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            startActivity(intent)
+        } catch (_: Exception) {
+            val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+            intent.data = "package:$packageName".toUri()
+            startActivity(intent)
         }
     }
 

@@ -101,6 +101,29 @@ class ApiClient {
         .toList(growable: false);
   }
 
+  /// `GET /balance?userId=…` — total + per-source net balance.
+  Future<BalanceSummary> getBalance(String userId) async {
+    final resp = await http
+        .get(Uri.parse('$baseUrl/balance?userId=$userId'))
+        .timeout(timeout);
+    if (resp.statusCode != 200) {
+      throw Exception('Balance fetch failed: HTTP ${resp.statusCode}');
+    }
+    return BalanceSummary.fromJson(
+        jsonDecode(resp.body) as Map<String, dynamic>);
+  }
+
+  /// `GET /year?userId=…&year=YYYY` — 12-month income/expense/saved summary.
+  Future<YearSummary> getYear(String userId, {required int year}) async {
+    final resp = await http
+        .get(Uri.parse('$baseUrl/year?userId=$userId&year=$year'))
+        .timeout(timeout);
+    if (resp.statusCode != 200) {
+      throw Exception('Year fetch failed: HTTP ${resp.statusCode}');
+    }
+    return YearSummary.fromJson(jsonDecode(resp.body) as Map<String, dynamic>);
+  }
+
   /// First-launch seed: timezone + currency so `/dashboard` doesn't 404.
   Future<void> ensureUserSettings(
     String userId, {
@@ -324,5 +347,107 @@ class Transaction {
         merchant: j['merchant'] as String? ?? '',
         occurredAt: j['occurredAt'] as String? ?? '',
         location: j['location'] as String? ?? '',
+      );
+}
+
+/// `/balance` response — total + per-source net balances.
+class BalanceSummary {
+  const BalanceSummary({
+    required this.currency,
+    required this.totalBalance,
+    required this.sources,
+  });
+
+  final String currency;
+  final String totalBalance;
+  final List<BalanceSource> sources;
+
+  double get totalBalanceNum => double.tryParse(totalBalance) ?? 0;
+
+  factory BalanceSummary.fromJson(Map<String, dynamic> j) => BalanceSummary(
+        currency: j['currency'] as String? ?? '',
+        totalBalance: j['totalBalance']?.toString() ?? '0',
+        sources: (j['sources'] as List? ?? const [])
+            .map((e) => BalanceSource.fromJson(e as Map<String, dynamic>))
+            .toList(growable: false),
+      );
+}
+
+/// One source's net balance (a source = the app that produced transactions).
+class BalanceSource {
+  const BalanceSource({
+    required this.packageName,
+    required this.appName,
+    required this.balance,
+    required this.transactionCount,
+  });
+
+  final String packageName;
+  final String appName;
+  final String balance;
+  final int transactionCount;
+
+  double get balanceNum => double.tryParse(balance) ?? 0;
+
+  factory BalanceSource.fromJson(Map<String, dynamic> j) => BalanceSource(
+        packageName: j['packageName'] as String? ?? '',
+        appName: j['appName'] as String? ?? '',
+        balance: j['balance']?.toString() ?? '0',
+        transactionCount: (j['transactionCount'] as num?)?.toInt() ?? 0,
+      );
+}
+
+/// `/year` response — 12 months of income/expense/saved.
+class YearSummary {
+  const YearSummary({
+    required this.year,
+    required this.currency,
+    required this.months,
+  });
+
+  final int year;
+  final String currency;
+  final List<MonthEntry> months;
+
+  /// Returns the entry for [month] (1-12), or null.
+  MonthEntry? entryFor(int month) {
+    for (final e in months) {
+      if (e.month == month) return e;
+    }
+    return null;
+  }
+
+  factory YearSummary.fromJson(Map<String, dynamic> j) => YearSummary(
+        year: (j['year'] as num?)?.toInt() ?? 0,
+        currency: j['currency'] as String? ?? '',
+        months: (j['months'] as List? ?? const [])
+            .map((e) => MonthEntry.fromJson(e as Map<String, dynamic>))
+            .toList(growable: false),
+      );
+}
+
+/// One month's aggregated summary in the year view.
+class MonthEntry {
+  const MonthEntry({
+    required this.month,
+    this.income,
+    this.expense,
+    this.saved,
+  });
+
+  final int month; // 1-12
+  final String? income;
+  final String? expense;
+  final String? saved;
+
+  double get incomeNum => double.tryParse(income ?? '') ?? 0;
+  double get expenseNum => double.tryParse(expense ?? '') ?? 0;
+  double get savedNum => double.tryParse(saved ?? '') ?? 0;
+
+  factory MonthEntry.fromJson(Map<String, dynamic> j) => MonthEntry(
+        month: (j['month'] as num?)?.toInt() ?? 0,
+        income: j['income']?.toString(),
+        expense: j['expense']?.toString(),
+        saved: j['saved']?.toString(),
       );
 }

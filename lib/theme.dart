@@ -5,26 +5,26 @@ class AppColors {
   AppColors._();
 
   // Light theme
-  static const Color lightPrimary = Color(0xFFFB8C00);
-  static const Color lightPrimaryContainer = Color(0xFFFFE0B2);
-  static const Color lightSurface = Color(0xFFFFFBF5);
-  static const Color lightSurfaceVariant = Color(0xFFFFF3E0);
-  static const Color lightOnSurface = Color(0xFF1F1B16);
-  static const Color lightBackground = Color(0xFFFFFBF5);
-  static const Color lightOutline = Color(0xFFE0CBB3);
+  static const Color lightPrimary = Color(0xFFE97132);
+  static const Color lightPrimaryContainer = Color(0xFFFADBC4);
+  static const Color lightSurface = Color(0xFFFEF8EC);
+  static const Color lightSurfaceVariant = Color(0xFFF5EEDC);
+  static const Color lightOnSurface = Color(0xFF1A1A1A);
+  static const Color lightBackground = Color(0xFFFEF8EC);
+  static const Color lightOutline = Color(0xFFD4C9B0);
 
   // Dark theme
   static const Color darkPrimary = Color(0xFFFF9800);
-  static const Color darkPrimaryContainer = Color(0xFF5C3D00);
-  static const Color darkSurface = Color(0xFF1E1E1E);
-  static const Color darkSurfaceVariant = Color(0xFF2A2A2A);
-  static const Color darkOnSurface = Color(0xFFF5F0E8);
+  static const Color darkPrimaryContainer = Color(0xFF5C2D10);
+  static const Color darkSurface = Color(0xFF1A1714);
+  static const Color darkSurfaceVariant = Color(0xFF2A2520);
+  static const Color darkOnSurface = Color(0xFFFEF8EC);
   static const Color darkBackground = Color(0xFF121212);
-  static const Color darkOutline = Color(0xFF3A3A3A);
+  static const Color darkOutline = Color(0xFF3A3530);
 
   // Shared
-  static const Color warning = Color(0xFFFB8C00);
-  static const Color warningBgLight = Color(0xFFFFE0B2);
+  static const Color warning = Color(0xFFE97132);
+  static const Color warningBgLight = Color(0xFFFADBC4);
   static const Color warningBgDark = Color(0xFF3D2E14);
   static const Color danger = Color(0xFFE53935);
 }

@@ -90,7 +90,8 @@ class _HomeScreenState extends State<HomeScreen> {
           _retried = true;
           await Future.delayed(const Duration(seconds: 2));
           if (!mounted) return;
-          return _load(silent: effectiveSilent);
+          await _load(silent: effectiveSilent);
+          return;
         }
         if (effectiveSilent) return;
         setState(() {
@@ -269,7 +270,7 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Expense Tracker')),
+      appBar: AppBar(title: const Text('Rabbix')),
       body: RefreshIndicator(onRefresh: _manualRetry, child: _buildBody()),
     );
   }

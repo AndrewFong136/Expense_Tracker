@@ -58,7 +58,7 @@ class _ExpenseTrackerAppState extends State<ExpenseTrackerApp> {
       valueListenable: _prefs.themeMode,
       builder: (context, mode, _) {
         return MaterialApp(
-          title: 'Expense Tracker',
+          title: 'Rabbix',
           debugShowCheckedModeBanner: false,
           theme: lightTheme(),
           darkTheme: darkTheme(),
@@ -98,7 +98,7 @@ class _MainScaffoldState extends State<MainScaffold> {
     super.initState();
     _pages = [
       HomeScreen(repo: widget.repo, api: widget.api, dashboardRev: _dashboardRev),
-      const BalanceScreen(),
+      BalanceScreen(repo: widget.repo, api: widget.api),
       const AddScreen(),
       const TransactionsScreen(),
       SettingsScreen(repo: widget.repo, prefs: widget.prefs, api: widget.api, dashboardRev: _dashboardRev),

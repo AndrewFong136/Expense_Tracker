@@ -14,7 +14,7 @@
 
     <application
         android:networkSecurityConfig="@xml/network_security_config"
-        android:label="expense_tracker"
+        android:label="Rabbix"
         android:icon="@mipmap/launcher_icon">
         <activity
             android:name=".MainActivity"
